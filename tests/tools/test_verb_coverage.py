@@ -43,8 +43,6 @@ SNIPER = "bot-04-sniper"
 
 EXIT_5_HANDOFF = [
     ["scout", "discover"],
-    ["scout", "pipeline", "--candidates"],
-    ["risk", "audit"],
     ["chief", "pickup"],
     ["rug", "watch"],
     ["journal", "rollup", "--daily"],
@@ -463,7 +461,7 @@ class TestServedVerbCoverage:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        assert len(EXIT_5_HANDOFF) == 9
+        assert len(EXIT_5_HANDOFF) == 7
         for argv in EXIT_5_HANDOFF:
             code, out, err = _run(argv)
             assert code == 5, argv

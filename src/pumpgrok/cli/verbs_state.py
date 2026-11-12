@@ -30,6 +30,7 @@ from pumpgrok.cli.errors import (
 )
 from pumpgrok.cli.promotion import make_promotion_check
 from pumpgrok.cli.validators import _human_by, _mint_approval_id, _utc_now, size_sol_to_lamports
+from pumpgrok.cli.verbs_live import paper_duration
 from pumpgrok.cli.wiring import (
     _call_use,
     _run_wired,
@@ -98,7 +99,7 @@ def _run(args: argparse.Namespace, settings: Settings) -> int:
         if any(not item.met for item in preconditions):
             _say(sys.stderr, *refusal_lines(preconditions))
             return EXIT_LIVE
-    if args.record is not None or args.duration is not None:
+    if args.replay and (args.record is not None or args.duration is not None):
         return _not_implemented("run --record")
     if args.serve:
         if args.once or not args.replay:
@@ -108,13 +109,27 @@ def _run(args: argparse.Namespace, settings: Settings) -> int:
             )
             return EXIT_NOT_IMPLEMENTED
         return _serve_replay_loop(Path(args.replay), settings)
-    if not (args.once and args.replay):
+    if args.once and args.replay:
+        return _skip_cycle(Path(args.replay), settings)
+    return _run_public_paper(args, settings)
+
+
+def _run_public_paper(args: argparse.Namespace, settings: Settings) -> int:
+    """Timed paper session on public data. Replay and live mode never enter here."""
+    if settings.effective_mode != "paper":
+        return _not_implemented("run --mode live")
+    if args.duration is None:
         _say(
             sys.stderr,
-            "not implemented: this release runs only `run --mode paper --once --replay <dir>`",
+            "not implemented: this release runs `run --mode paper --once --replay <dir>` "
+            "or `run --mode paper --duration <seconds>`",
         )
         return EXIT_NOT_IMPLEMENTED
-    return _skip_cycle(Path(args.replay), settings)
+    if args.duration < 0:
+        raise UsageError("--duration must be zero or greater")
+    if args.record is not None and not DATASET_NAME_RE.fullmatch(args.record):
+        raise UsageError("--record name must be a plain dataset name")
+    return paper_duration(args, settings)
 
 
 def _serve_replay_loop(source: Path, settings: Settings) -> int:

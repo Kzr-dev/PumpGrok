@@ -14,6 +14,7 @@ Nothing raised or logged here carries an endpoint URL, a header value, or
 
 from __future__ import annotations
 
+import json
 import random
 from collections.abc import Sequence
 from typing import Any
@@ -96,6 +97,7 @@ class RpcClient:
         timeout_seconds: float = 15.0,
         max_attempts_per_endpoint: int = 3,
         retry: RetryPolicy | None = None,
+        cache_ttl_s: float = 0.0,
     ) -> None:
         if not endpoints:
             raise RpcError("rpc misconfigured: no endpoints")
@@ -114,6 +116,8 @@ class RpcClient:
                 max_s=5.0,
             )
         self._retry = retry
+        self._cache_ttl_s = cache_ttl_s
+        self._cache: dict[str, tuple[float, Any]] = {}
 
     @property
     def clock(self) -> Clock:
@@ -148,6 +152,9 @@ class RpcClient:
             return data.get("result")
         return data
 
+    def _cache_key(self, method: str, params: list[Any]) -> str:
+        return method + "\n" + json.dumps(params, sort_keys=True, default=str)
+
     async def call(self, method: str, params: list[Any]) -> Any:
         """POST ``method`` to each endpoint in order; first success wins.
 
@@ -156,7 +163,21 @@ class RpcClient:
         An RPC-level ``error`` fails over immediately; a malformed body fails
         over and becomes :class:`DataStale` when every endpoint is malformed.
         Failures raise :class:`RpcError` with no URL, header, or exception text.
+        A positive ``cache_ttl_s`` reuses a successful body until the injected
+        clock moves past it. Failures are not cached.
         """
+        key = ""
+        if self._cache_ttl_s > 0:
+            key = self._cache_key(method, params)
+            hit = self._cache.get(key)
+            if hit is not None and self._clock.now() - hit[0] <= self._cache_ttl_s:
+                return hit[1]
+        result = await self._call_uncached(method, params)
+        if key:
+            self._cache[key] = (self._clock.now(), result)
+        return result
+
+    async def _call_uncached(self, method: str, params: list[Any]) -> Any:
         bad_bodies = 0
         for endpoint in self._endpoints:
             try:

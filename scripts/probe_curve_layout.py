@@ -43,13 +43,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+from pumpgrok.tools.onchain.curve_layout import (
+    PUMP_CURVE_ACCOUNT_SIZE,
+    CurveDecodeError,
+    decode_curve_account,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Kept for the offline doc probe, which packs fixture bytes with this struct.
+_CURVE_STRUCT = struct.Struct("<8sQQQQQB")
 DEFAULT_ENDPOINT = "https://api.mainnet-beta.solana.com"
 DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "rpc" / "bonding_curve" / "probe.json"
 DEFAULT_DOC = REPO_ROOT / "docs" / "CURVE_LAYOUT_PROBE.md"
-
-_CURVE_STRUCT = struct.Struct("<8sQQQQQB")
-_EXPECTED_SIZE = _CURVE_STRUCT.size
 
 # Owner and discriminator a bonding-curve account must carry before its bytes
 # are trusted. Both match tests/fixtures/rpc/bonding_curve/layout.json.
@@ -160,30 +165,18 @@ def _rpc_get_account(endpoint: str, account: str, commitment: str, timeout: floa
 
 
 def _decode_account(raw: bytes) -> dict:
-    """Decode raw account bytes under the ASSUMED layout; raises on mismatch."""
-    if len(raw) != _EXPECTED_SIZE:
-        raise ValueError(f"curve account size {len(raw)} != ASSUMED {_EXPECTED_SIZE}")
-    (disc, vsol, vtok, rsol, rtok, supply, complete) = _CURVE_STRUCT.unpack(raw)
-    if complete not in (0, 1):
-        raise ValueError(f"curve completion flag not boolean: {complete!r}")
-    for name, value in (
-        ("virtual_sol", vsol),
-        ("virtual_token", vtok),
-        ("real_sol", rsol),
-        ("real_token", rtok),
-        ("supply", supply),
-    ):
-        if value == 0 and name in ("virtual_sol", "virtual_token", "supply"):
-            raise ValueError(f"curve reserve {name} is zero; price undefined")
-    return {
-        "discriminator_hex": disc.hex(),
-        "virtual_sol_reserves_lamports": vsol,
-        "virtual_token_reserves_units": vtok,  # pragma: allowlist secret: on-chain reserve count
-        "real_sol_reserves_lamports": rsol,
-        "real_token_reserves_units": rtok,
-        "total_supply_units": supply,
-        "complete": bool(complete),
-    }
+    """Decode raw account bytes; the pump layout accepts 49 through 166 bytes."""
+    if len(raw) > PUMP_CURVE_ACCOUNT_SIZE:
+        raise ValueError(
+            f"curve account size {len(raw)} is above the documented {PUMP_CURVE_ACCOUNT_SIZE}"
+        )
+    try:
+        state = decode_curve_account(raw)
+    except CurveDecodeError as exc:
+        raise ValueError(str(exc)) from exc
+    decoded = state.model_dump()
+    decoded["discriminator_hex"] = raw[:8].hex()
+    return decoded
 
 
 def _check_identity(value: dict, raw: bytes) -> None:

@@ -1,0 +1,5 @@
+{"ts_utc":"2026-11-12T00:00:00.000Z","kind":"tick","mint":"CrashMint11111111111111111111111111111111","name":"Fast Crash","S":20000,"T":1000000000000000,"complete":false,"source":"rpc","usd_hint":"20.00"}
+{"ts_utc":"2026-11-12T00:00:01.000Z","kind":"tick","mint":"CrashMint11111111111111111111111111111111","name":"Fast Crash","S":31383,"T":1000000000000000,"complete":false,"source":"ws","usd_hint":"31.38"}
+{"ts_utc":"2026-11-12T00:00:02.000Z","kind":"tick","mint":"CrashMint11111111111111111111111111111111","name":"Fast Crash","S":27120,"T":1000000000000000,"complete":false,"source":"ws","usd_hint":"27.12"}
+{"ts_utc":"2026-11-12T00:00:03.000Z","kind":"tick","mint":"CrashMint11111111111111111111111111111111","name":"Fast Crash","S":20398,"T":1000000000000000,"complete":false,"source":"ws","usd_hint":"20.40"}
+{"ts_utc":"2026-11-12T00:00:17.000Z","kind":"tick","mint":"CrashMint11111111111111111111111111111111","name":"Fast Crash","S":14750,"T":1000000000000000,"complete":false,"source":"ws","usd_hint":"14.75"}

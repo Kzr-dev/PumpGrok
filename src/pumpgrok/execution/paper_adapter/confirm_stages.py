@@ -154,7 +154,9 @@ class _ConfirmStagesMixin:
                 ledger_source=ledger_source,
                 correlation_id=correlation_id,
             )
-        if request.side is Side.BUY and not rpc_curve_price_allowed(curve_source=curve1.source):
+        if request.side is Side.BUY and not rpc_curve_price_allowed(
+            curve_source=curve1.source, layout=curve1.layout
+        ):
             raise await self._confirm_refuse(
                 request,
                 order_id=order_id,

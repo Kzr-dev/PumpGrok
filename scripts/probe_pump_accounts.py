@@ -195,12 +195,12 @@ def _decode_outcome(value: Mapping[str, Any] | None) -> tuple[str | None, dict[s
     raw = _raw_bytes(value)
     if raw is None:
         return "account data is not base64; layout stays ASSUMED", None
+    if raw[:8].hex() != EXPECTED_DISCRIMINATOR_HEX:
+        return "discriminator does not match the ASSUMED layout; layout stays ASSUMED", None
     try:
         state = decode_curve_account(raw)
     except CurveDecodeError as exc:
         return f"{exc}; layout stays ASSUMED", None
-    if raw[:8].hex() != EXPECTED_DISCRIMINATOR_HEX:
-        return "discriminator does not match the ASSUMED layout; layout stays ASSUMED", None
     return None, state.model_dump()
 
 

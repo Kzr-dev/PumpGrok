@@ -1,0 +1,14 @@
+{
+  "dataset": "fast-crash",
+  "recorded_from_utc": "2026-11-12T00:00:00.000Z",
+  "recorded_to_utc": "2026-11-12T00:00:17.000Z",
+  "seed_hint": 20261112,
+  "sources": {
+    "rpc": "hand-authored",
+    "pumpportal": "hand-authored"
+  },
+  "sha256": {
+    "events.jsonl": "991874247b9951b08aaf9d63847495cb1dcc29552804e617f9af42d6a85aeb25"
+  },
+  "notes": "Fast-crash tick sequence. Peak 31383, 27.12 sample, 35 percent cross at 20398, 53 percent crash at 14750 sixteen seconds after the peak. A 15 second poll that sees the peak and then the crash fills 53 percent under the peak."
+}

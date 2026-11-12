@@ -247,7 +247,9 @@ class _BuyMixin:
                 correlation_id=correlation_id,
             )
         # The source gate prices entries only: a stop-loss sell must still fill (INV-R-16).
-        if request.side is Side.BUY and not rpc_curve_price_allowed(curve_source=curve0.source):
+        if request.side is Side.BUY and not rpc_curve_price_allowed(
+            curve_source=curve0.source, layout=curve0.layout
+        ):
             raise await self._reject(
                 request,
                 request.decision_id,

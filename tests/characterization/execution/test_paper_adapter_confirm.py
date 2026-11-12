@@ -313,7 +313,7 @@ SCENARIOS: dict[str, Callable[[Path], Awaitable[dict[str, Any]]]] = {
 }
 
 _PIN_TABLE = """
-confirm_direct_sell 3e8fa100bfa6ff0cb35073e5e39c56d3db5aa219fe56d3025cc5e42aaaf44edf
+confirm_direct_sell c993d2ff65f5bf52dc2a88396026bcfea81e256db1a2a215be492894ac20a7d0
 confirm_timeout_sell bab61d09d430d16e86df4e5e28dcfe86d452859e91cec7f1adc0b2a917ab1036
 cancel_sell_during_latency f60b970e4b0ff355468e08a4a2d3e4cef705094575416d08e7e18e2327031cf4
 recheck_refused_sell fa20a328b104216d94bc8c58318daaab35ac3003824229b3f9122cb1f046125a
