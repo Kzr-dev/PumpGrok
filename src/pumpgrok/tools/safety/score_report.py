@@ -253,15 +253,32 @@ async def _read_all(inp: ScoreReportIn, rpc: RpcClient, runnable: list[CheckId])
         if "liquidity_depth" in needed
         else None
     )
-    auth, lp, meta, top, dep, liq = await asyncio.gather(
-        _optional(auth_call),
-        _optional(lp_call),
-        _optional(meta_call),
-        _optional(top_call),
-        _optional(dep_call),
-        _optional(liq_call),
+    auth, lp, meta, top, dep, liq = await _gather_bounded(
+        [auth_call, lp_call, meta_call, top_call, dep_call, liq_call]
     )
     return _Readings(auth=auth, lp=lp, meta=meta, top=top, dep=dep, liq=liq)
+
+
+# One reader at a time on the public RPC so a ten-check audit cannot burst.
+# A recorded paid provider may overlap a few reads; the thresholds do not change.
+_PUBLIC_READER_SLOTS = 1
+_PAID_READER_SLOTS = 4
+
+
+async def _gather_bounded(
+    calls: list[Coroutine[Any, Any, dict[str, Any]] | None],
+) -> list[dict[str, Any] | None]:
+    """Run readers with a concurrency cap. A ``DataStale`` reader is ``None``."""
+    slots = _PAID_READER_SLOTS if paid_rpc_provider_recorded() else _PUBLIC_READER_SLOTS
+    gate = asyncio.Semaphore(slots)
+
+    async def _one(call: Coroutine[Any, Any, dict[str, Any]] | None) -> dict[str, Any] | None:
+        if call is None:
+            return None
+        async with gate:
+            return await _fetch(call)
+
+    return list(await asyncio.gather(*(_one(call) for call in calls)))
 
 
 def _reader_row(

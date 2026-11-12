@@ -28,6 +28,7 @@ from pumpgrok.core.adapter import EXIT_RULE_REASONS, ExitRuleReason, OrderReques
 from pumpgrok.core.errors import OrderRejectedError, OrderUnknownError
 from pumpgrok.core.ids import Clock, IdFactory
 from pumpgrok.core.risk_budget import RiskBudget
+from pumpgrok.core.tool import RetryPolicy
 from pumpgrok.engine.models import ExitPosition
 from pumpgrok.execution.paper_adapter import PaperAdapter
 from pumpgrok.execution.paper_adapter.models import CurveSnapshot
@@ -38,7 +39,7 @@ from pumpgrok.ledger.tickets import allocate_ticket
 from pumpgrok.replay.clock import WallClock, format_ts_utc
 from pumpgrok.replay.rng import make_rng
 from pumpgrok.risk.engine import RiskEngine
-from pumpgrok.risk.fast_audit import audit_mint
+from pumpgrok.risk.fast_audit import audit_mint, dumps_audit, rpc_min_interval_s
 from pumpgrok.risk.limits import EngineLimits
 from pumpgrok.supervisor.exit_rules import LedgerExitBook
 from pumpgrok.supervisor.exit_watch import PriceTick, TickExitWatch
@@ -364,6 +365,17 @@ async def _handle_launch(
         note_kind="safety_report",
     )
     report.journaled += 1
+    if deps.record is not None:
+        deps.record(
+            {
+                "ts_utc": format_ts_utc(deps.clock.now()),
+                "kind": "launch",
+                "mint": launch.mint,
+                "name": launch.name,
+                "verdict": verdict,
+                "source": "pumpportal",
+            }
+        )
     if verdict == "KILL" or audited.get("final") is True:
         killed.add(launch.mint)
         report.kills += 1
@@ -540,14 +552,29 @@ def default_quote(client: Any, *, quote_url: str = QUOTE_URL) -> QuoteCall:
 
 def audit_with(rpc: RpcClient) -> Callable[[Launch, str, int], Awaitable[dict[str, Any]]]:
     async def audit(launch: Launch, ticket: str, size: int) -> dict[str, Any]:
-        return await audit_mint(
-            rpc,
-            mint=launch.mint,
-            curve_account=launch.curve_account,
-            creator=launch.creator,
-            intended_size_lamports=size,
-            ticket_id=ticket,
-        )
+        try:
+            report = await audit_mint(
+                rpc,
+                mint=launch.mint,
+                curve_account=launch.curve_account,
+                creator=launch.creator,
+                intended_size_lamports=size,
+                ticket_id=ticket,
+            )
+            dumps_audit(report)
+        except (TypeError, ValueError):
+            return {
+                "ok": False,
+                "mint": launch.mint,
+                "ticket_id": ticket,
+                "verdict": "KILL",
+                "final": True,
+                "text": f"LEAD / TICKET-ID: {ticket}\nVerdict: KILL\nreport was not serializable",
+                "checks": [],
+                "blind_checks": [],
+                "advisory_blind_checks": [],
+            }
+        return report
 
     return audit
 
@@ -785,6 +812,8 @@ async def serve_public_paper(
             make_rng(settings.replay.seed),
             api_key=settings.rpc.api_key,
             cache_ttl_s=2.0,
+            min_interval_s=rpc_min_interval_s(),
+            retry=RetryPolicy(attempts=1, base_s=0.5, max_s=2.0),
         )
         curves: dict[str, str] = {}
         feed = RpcCurveFeed(rpc, curves)
