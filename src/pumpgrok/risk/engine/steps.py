@@ -65,6 +65,7 @@ class _EngineSteps:
         ts_utc: str,
         source: str,
         correlation_id: str,
+        set_by: str = "risk_engine",
     ) -> dict[str, Any]:
         return {
             "ts_utc": ts_utc,
@@ -78,9 +79,37 @@ class _EngineSteps:
                 "detail": detail,
                 "equity_lamports": equity,
                 "day_start_equity_lamports": day_start,
-                "set_by": "risk_engine",
+                "set_by": set_by,
             },
         }
+
+    def request_manual_halt(
+        self,
+        by: str,
+        reason: str,
+        *,
+        source: str = "paper",
+        correlation_id: str = "desk",
+    ) -> None:
+        """Append ``HaltSet(reason=manual)`` for a human. A latched halt is refused."""
+        if not by.startswith("human:") or not reason.strip():
+            raise ValueError("manual halt needs human:<name> and a reason")
+        state = self._fold()
+        if state.halt.active:
+            raise ValueError("halt already active")
+        equity = self._equity_for_halts(state)
+        self._store.append(
+            **self._halt_row(
+                reason="manual",
+                detail=reason.strip(),
+                equity=equity,
+                day_start=int(state.day_start_equity_lamports),
+                ts_utc=self._now_ts(),
+                source=source,
+                correlation_id=correlation_id,
+                set_by=by,
+            )
+        )
 
     def evaluate_halts(self, *, source: str = "paper", correlation_id: str = "desk") -> str | None:
         """Detect fresh daily-loss and drawdown breaches and append ``HaltSet``.

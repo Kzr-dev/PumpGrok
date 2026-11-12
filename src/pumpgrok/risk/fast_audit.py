@@ -52,11 +52,34 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
+def _check_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    checks = report.get("checks") or []
+    if not isinstance(checks, list):
+        return []
+    return [row for row in checks if isinstance(row, dict)]
+
+
+def blind_check_ids(checks: list[dict[str, Any]]) -> list[str]:
+    """Every check that has no live reading, advisory blinds included."""
+    return [str(row.get("id")) for row in checks if row.get("status") == "blind"]
+
+
+def self_audit_flag(checks: list[dict[str, Any]]) -> str:
+    """YES only when all ten checks ran and none of them is blind."""
+    if len(checks) != len(CHECK_IDS):
+        return "NO"
+    if blind_check_ids(checks):
+        return "NO"
+    return "YES"
+
+
 def audit_text(report: dict[str, Any], *, mint: str, ticket_id: str) -> str:
     """ASCII checklist the risk seat journals. A KILL line is not optional."""
     verdict = str(report.get("verdict_recommendation", "KILL"))
-    checks = report.get("checks") or []
+    checks = _check_rows(report)
+    blinds = blind_check_ids(checks)
     lines = [
+        "Seat: bot-02-risk",
         f"LEAD / TICKET-ID: {ticket_id}",
         f"Mint: {mint}",
         f"Verdict: {verdict}",
@@ -76,23 +99,24 @@ def audit_text(report: dict[str, Any], *, mint: str, ticket_id: str) -> str:
         lines.append("Conditions: required checks must be fresh before an entry")
     if verdict == "KILL":
         lines.append("Final: KILL cannot be overridden")
-    complete = isinstance(checks, list) and len(checks) == len(CHECK_IDS)
-    lines.append(f"Self-Audit: All 10 checks completed: {'YES' if complete else 'NO'}")
+    lines.append(f"Self-Audit: All 10 checks completed: {self_audit_flag(checks)}")
+    lines.append("Blind checks: " + (", ".join(blinds) if blinds else "none"))
     return "\n".join(lines)
 
 
 def finalize_report(report: dict[str, Any], *, mint: str, ticket_id: str) -> dict[str, Any]:
     """Add the CLI fields. ``final`` is true only for KILL."""
     verdict = str(report.get("verdict_recommendation", "KILL"))
-    checks = report.get("checks") or []
+    checks = _check_rows(report)
     body = {
         "ok": True,
         "mint": mint,
         "ticket_id": ticket_id,
         "verdict": verdict,
         "final": verdict == "KILL",
-        "self_audit": "YES" if isinstance(checks, list) and len(checks) == len(CHECK_IDS) else "NO",
-        "blind_checks": list(report.get("blind_checks") or []),
+        "seat": "bot-02-risk",
+        "self_audit": self_audit_flag(checks),
+        "blind_checks": blind_check_ids(checks) or list(report.get("blind_checks") or []),
         "advisory_blind_checks": list(report.get("advisory_blind_checks") or []),
         "checks": checks,
         "score": report.get("score"),

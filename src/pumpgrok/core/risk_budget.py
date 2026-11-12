@@ -18,8 +18,11 @@ class RiskBudget(BaseModel):
     """Per-seat ceilings and the desk-level budget. The ONLY risk-budget schema (R20).
 
     Fractions are of equity in 0..1 (never percent). Money is `int`; prices are
-    `Decimal`. `paper_equity_sol` is the one SOL-denominated config value; it is
-    converted to lamports once at load (R28).
+    `Decimal`. `paper_equity_sol` is the SOL-denominated config value; it is
+    converted to lamports once at load (R28). `paper_equity_usd`, when set, is
+    the session book in USD. A live paper session converts it once, at start,
+    with a SOL/USD quote and uses that lamport amount for sizing, halts and a
+    new ledger. It is not converted at config load.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -33,6 +36,7 @@ class RiskBudget(BaseModel):
     liquidity_floor_multiple: int = Field(default=10, ge=1)
     partial_fill_fraction: Decimal = Field(default=Decimal("0.02"), gt=0, le=1)
     paper_equity_sol: Decimal = Field(default=Decimal("10"), gt=0)
+    paper_equity_usd: Decimal | None = None
 
     @field_validator("daily_loss_halt_fraction")
     @classmethod
@@ -40,6 +44,13 @@ class RiskBudget(BaseModel):
         if v > Decimal("0.05"):
             raise ValueError(f"daily_loss_halt_fraction {v} exceeds the 0.05 cap (INV-C-06)")
         return v
+
+    @field_validator("paper_equity_usd")
+    @classmethod
+    def _usd_book(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and value <= 0:
+            raise ValueError("paper_equity_usd must be positive")
+        return value
 
     @property
     def paper_equity_lamports(self) -> int:

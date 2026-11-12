@@ -24,9 +24,9 @@ EXPECTED_REPORT = """# PumpGrok backtest report
 code_version: ffffffffffffffffffffffffffffffffffffffff
 dataset: smoke-10m
 dataset_digest: 2f192b9f3f134f2d92482f0445c32297d45fc54faa8695853abe5ee264da2df7
-filter_settings_hash: ad44f6c325f350a860767441bbe1fd3f11ec276effccb098e2ce9af1c9a4d6eb
+filter_settings_hash: 4d37c67e79713b77de24f6d252dbceb4d2b804cbe7a66bcaebd278ae3077fc51
 param_set_hash: d6c9cd2aa6bebb78a249d6fe42fc519d46ac85bcf4af10f96438b054a2990c93
-run_id: b2a845ed734638cce870afcd67f22e564ba116724db83f9a3cbccf7f2dd8f74b
+run_id: fe6d40ba5953c1f4476aa2631bb0ce1f05977cd2fbf10b7bcaddf6d92368e93d
 seed: 20260101
 note: filter_settings_hash identifies the full evaluated configuration: filter, exits, risk budget and limits
 ## Data window

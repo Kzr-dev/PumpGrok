@@ -57,9 +57,12 @@ async def test_missing_reads_are_kill_and_the_readers_overlap() -> None:
     )
     assert report["verdict"] == "KILL"
     assert report["final"] is True
-    assert report["self_audit"] == "YES"
+    assert report["self_audit"] == "NO"
+    assert report["seat"] == "bot-02-risk"
     assert len(report["checks"]) == len(CHECK_IDS) == 10
-    assert "All 10 checks completed: YES" in report["text"]
+    assert "All 10 checks completed: NO" in report["text"]
+    assert "Blind checks:" in report["text"]
+    assert "none" not in report["text"].split("Blind checks:", 1)[1]
     assert "Final: KILL cannot be overridden" in report["text"]
     assert rpc.max_in_flight == 1
     parsed = json.loads(dumps_audit(report))

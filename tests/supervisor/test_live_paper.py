@@ -182,7 +182,10 @@ async def test_autonomous_paper_buys_once_through_the_adapter(tmp_path: Path) ->
         if row["type"] == "OrderPlaced" and row["payload"]["side"] == "buy"
     ]
     assert len(placed) == 1
-    assert deps.store.read(types=["JournalNote"], limit=None)
+    notes = deps.store.read(types=["JournalNote"], limit=None)
+    assert notes
+    reports = [row for row in notes if row["payload"]["note_kind"] == "safety_report"]
+    assert reports and reports[0]["payload"]["seat"] == "bot-02-risk"
 
 
 async def test_manual_ticket_does_not_buy(tmp_path: Path) -> None:
