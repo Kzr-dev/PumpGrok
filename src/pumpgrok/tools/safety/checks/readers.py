@@ -65,8 +65,15 @@ def check_top10_concentration(top: dict[str, Any], thresholds: SafetyThresholds)
     )
 
 
+# The skill and SafetyThresholds name no launch-count. This is the existing
+# serial-launcher line in this check. ``tokens_seen`` is a signature count,
+# capped by the RPC window, not an adjudicated launch count. A count at or
+# above the line fails the mandatory deployer check.
+_SERIAL_SIGNATURES = 3
+
+
 def check_deployer_history(dep: dict[str, Any]) -> CheckResult:
-    """Fail adjudicated-bad creators; warn prolific ones; pass the rest."""
+    """Fail known-bad creators and serial launchers; pass the rest."""
     if bool(dep.get("is_known_bad")) or int(dep.get("rugs", 0)) > 0:
         return CheckResult(
             id="deployer_history",
@@ -77,14 +84,17 @@ def check_deployer_history(dep: dict[str, Any]) -> CheckResult:
             reason="creator record shows known-bad history",
         )
     seen = int(dep.get("tokens_seen", 0))
-    if seen >= 3:
+    if seen >= _SERIAL_SIGNATURES:
         return CheckResult(
             id="deployer_history",
-            status="warn",
+            status="fail",
             value=seen,
-            threshold=3,
+            threshold=_SERIAL_SIGNATURES,
             weight=Decimal("0.10"),
-            reason=f"creator has launched {seen} tokens in the window; serial-launcher caution",
+            reason=(
+                f"creator has launched {seen} tokens in the window; "
+                f"serial-launcher fail at {_SERIAL_SIGNATURES}"
+            ),
         )
     return CheckResult(
         id="deployer_history",

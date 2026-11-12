@@ -157,11 +157,19 @@ def _add_state(verbs: _VerbsAction, mode_option: _Parser) -> None:
     state_cmd = state.add_subparsers(dest="cmd", required=True, metavar="STATE")
     state_status = state_cmd.add_parser("status", help="report desk status")
     _add_seat(state_status)
-    state_halt = state_cmd.add_parser("halt", help="set or inspect the halt flag")
+    state_halt = state_cmd.add_parser("halt", help="set, clear, or inspect the halt flag")
+    state_halt.add_argument("--set", action="store_true", help="record a manual halt (human only)")
     state_halt.add_argument("--clear", action="store_true", help="clear the halt (human only)")
-    state_halt.add_argument("--by", default=None, help="who clears the halt")
+    state_halt.add_argument("--by", default=None, help="human:<name> setting or clearing the halt")
     state_halt.add_argument("--reason", default=None, help="why the halt changes")
     _add_seat(state_halt)
+    state_blind = state_cmd.add_parser(
+        "accept-blind",
+        help="record a human acceptance of blind checks for one session",
+    )
+    state_blind.add_argument("--by", required=True, help="human:<name> accepting the blind checks")
+    state_blind.add_argument("--reason", required=True, help="which blind checks the human accepts")
+    _add_seat(state_blind)
     state_autonomy = state_cmd.add_parser("autonomy", help="set the autonomy mode (R40)")
     state_autonomy.add_argument(
         "policy", choices=("manual-ticket", "autonomous-paper"), help="autonomy policy"

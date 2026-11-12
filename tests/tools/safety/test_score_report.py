@@ -166,13 +166,13 @@ async def test_clear_report_on_clean_data() -> None:
     assert all(isinstance(c.reason, str) and c.reason for c in out.checks)
 
 
-async def test_conditional_on_concentration_and_freeze() -> None:
+async def test_required_fails_are_kill_even_when_the_score_is_conditional() -> None:
     reg, bot = _run_with(
         _handler(freeze_live=True, supply="200000000", holders_ok=True), _clear_in()
     )
     out = await _call(reg, bot, _clear_in())
     assert out.score == 50
-    assert out.verdict_recommendation == "CONDITIONAL"
+    assert out.verdict_recommendation == "KILL"
     assert out.hard_veto is False
     statuses = {c.id: c.status for c in out.checks}
     assert statuses["freeze_authority"] == "fail"
@@ -240,7 +240,7 @@ async def test_threshold_override_moves_verdict() -> None:
     )
     base = await _call(reg, bot, _clear_in())
     assert base.score == 75
-    assert base.verdict_recommendation == "CLEAR"
+    assert base.verdict_recommendation == "KILL"
     over = await _call(
         reg,
         bot,

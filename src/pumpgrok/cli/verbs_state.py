@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from pumpgrok.cli.codes import (
     _TRADE_UNAVAILABLE,
     DATASET_NAME_RE,
@@ -41,6 +43,7 @@ from pumpgrok.config.settings import ConfigError, Settings, health_port
 from pumpgrok.core.approvals import ApprovalRecord
 from pumpgrok.core.errors import PumpgrokError
 from pumpgrok.core.ids import IdFactory
+from pumpgrok.core.risk_budget import RiskBudget
 from pumpgrok.core.tool import Tool
 from pumpgrok.execution.live.live_gate import LiveGate, refusal_lines
 from pumpgrok.ledger.active_set import read_active_param_set
@@ -53,6 +56,14 @@ from pumpgrok.replay.rng import make_rng
 from pumpgrok.replay.runner import format_trade
 from pumpgrok.risk.engine import RiskEngine
 from pumpgrok.risk.killswitch import ClearRefused, KillSwitch, killswitch_file
+from pumpgrok.risk.session_book import (
+    BookUnresolved,
+    apply_book,
+    budget_for_book,
+    locked_book,
+    record_blind_acceptance,
+    resolve_session_book,
+)
 from pumpgrok.supervisor.scheduler import run_once_replay, serve_replay
 from pumpgrok.tools import ensure_paper_genesis
 from pumpgrok.upgrade.params import ParamSet
@@ -216,7 +227,10 @@ def _set_autonomy(policy: str, by: str, settings: Settings) -> int:
     """Append the ``ConfigChanged`` + ``JournalNote`` pair for a level change."""
     store = LedgerStore(str(PAPER_LEDGER_PATH))
     try:
-        ensure_paper_genesis(store, settings.risk)
+        # A USD book is quoted by the paper session, which owns the first
+        # genesis row. Stamping the SOL default here would lock the wrong book.
+        if settings.risk.paper_equity_usd is None:
+            ensure_paper_genesis(store, settings.risk)
         previous = read_autonomy(store)
         ts_utc = format_ts_utc(WallClock().now())
         store.append_batch(
@@ -238,16 +252,87 @@ def _set_autonomy(policy: str, by: str, settings: Settings) -> int:
     return EXIT_OK
 
 
+async def _budget_for_state(settings: Settings, store: LedgerStore) -> RiskBudget:
+    """Use the locked ledger book. A new ledger resolves the configured book first."""
+    locked = locked_book(store, settings.risk)
+    if locked is not None:
+        return budget_for_book(settings.risk, locked)
+    client = httpx.AsyncClient()
+    try:
+        book = await resolve_session_book(settings.risk, client, settings.jupiter.quote_url)
+    finally:
+        await client.aclose()
+    return apply_book(store, settings.risk, book)
+
+
+def _halt_set(by: str, reason: str, settings: Settings) -> int:
+    """Append ``HaltSet(reason=manual)`` for a human. The risk engine writes the row."""
+    verb = "state halt --set"
+    store = LedgerStore(str(PAPER_LEDGER_PATH))
+    try:
+        try:
+            budget = asyncio.run(_budget_for_state(settings, store))
+        except BookUnresolved as exc:
+            _say(sys.stderr, f"session book unresolved: {exc}")
+            return EXIT_CONFIG
+        clock = WallClock()
+        engine = RiskEngine(
+            store=store,
+            budget=budget,
+            ids=IdFactory(clock, make_rng(settings.replay.seed)),
+            clock=clock,
+            limits=settings.limits,
+        )
+        try:
+            engine.request_manual_halt(by, reason, source="paper", correlation_id="desk")
+        except (ValueError, sqlite3.IntegrityError, LedgerInconsistent) as exc:
+            return _tool_error(verb, "halt_set_refused", str(exc))
+    finally:
+        store.close()
+    _say(sys.stdout, json.dumps({"ok": True, "halt": "set", "by": by, "reason": reason}))
+    return EXIT_OK
+
+
+def _accept_blind(by: str, reason: str, settings: Settings) -> int:
+    """Record a session blind-check acceptance. It does not turn a KILL into a pass."""
+    store = LedgerStore(str(PAPER_LEDGER_PATH))
+    try:
+        try:
+            asyncio.run(_budget_for_state(settings, store))
+        except BookUnresolved as exc:
+            _say(sys.stderr, f"session book unresolved: {exc}")
+            return EXIT_CONFIG
+        approval_id = _mint_approval_id()
+        record_blind_acceptance(
+            store,
+            WallClock(),
+            by=by,
+            reason=reason,
+            approval_id=approval_id,
+        )
+    finally:
+        store.close()
+    _say(
+        sys.stdout,
+        json.dumps({"ok": True, "blind_acceptance": "recorded", "by": by, "id": approval_id}),
+    )
+    return EXIT_OK
+
+
 def _halt_clear(by: str, reason: str, settings: Settings) -> int:
     """Append ``HaltCleared`` plus the consumed ``halt_clear`` approval (R5)."""
     verb = "state halt --clear"
     store = LedgerStore(str(PAPER_LEDGER_PATH))
     try:
-        ensure_paper_genesis(store, settings.risk)
+        try:
+            budget = asyncio.run(_budget_for_state(settings, store))
+        except BookUnresolved as exc:
+            _say(sys.stderr, f"session book unresolved: {exc}")
+            return EXIT_CONFIG
         clock = WallClock()
         engine = RiskEngine(
             store=store,
-            budget=settings.risk,
+            budget=budget,
             ids=IdFactory(clock, make_rng(settings.replay.seed)),
             clock=clock,
             limits=settings.limits,
@@ -295,6 +380,34 @@ def _resume(target: str, by: str, settings: Settings) -> int:
     return EXIT_OK
 
 
+def _halt_command(args: argparse.Namespace, settings: Settings, verb: str) -> int:
+    """Record a human halt or its lift. The two flags are not combined."""
+    if args.set and args.clear:
+        raise UsageError("state halt accepts only one of --set and --clear")
+    by = _human_by(args.by, verb)
+    if args.set:
+        if not args.reason:
+            raise UsageError("state halt --set requires --reason")
+        return _halt_set(by, args.reason, settings)
+    return _halt_clear(by, args.reason or "", settings)
+
+
+def _state_command(args: argparse.Namespace, settings: Settings, verb: str) -> int | None:
+    """Human state writes. ``None`` leaves the verb on the halt-status tool."""
+    if args.cmd == "accept-blind":
+        return _accept_blind(_human_by(args.by, verb), args.reason, settings)
+    if args.cmd == "halt" and (args.set or args.clear):
+        return _halt_command(args, settings, verb)
+    if args.cmd == "autonomy":
+        by = _human_by(args.by, verb)
+
+        async def _autonomy_use(_tools: list[Tool]) -> int:
+            return _set_autonomy(args.policy, by, settings)
+
+        return _run_wired(verb, args.seat, settings, ("risk.halt_status",), _autonomy_use)
+    return None
+
+
 def _state(args: argparse.Namespace, settings: Settings) -> int:
     verb = f"state {args.cmd}"
     if args.cmd == "resume":
@@ -311,18 +424,9 @@ def _state(args: argparse.Namespace, settings: Settings) -> int:
     refused = _refuse_forbidden_seat(args.seat, verb)
     if refused is not None:
         return refused
-    if args.cmd == "halt" and args.clear:
-        # Human-only (R22): the ledger HaltCleared + ApprovalRecord.
-        by = _human_by(args.by, verb)
-        return _halt_clear(by, args.reason or "", settings)
-    if args.cmd == "autonomy":
-        # Human-only (R17, R40): ConfigChanged plus a journal note, one batch.
-        by = _human_by(args.by, verb)
-
-        async def _autonomy_use(_tools: list[Tool]) -> int:
-            return _set_autonomy(args.policy, by, settings)
-
-        return _run_wired(verb, args.seat, settings, ("risk.halt_status",), _autonomy_use)
+    handled = _state_command(args, settings, verb)
+    if handled is not None:
+        return handled
     return _run_wired(verb, args.seat, settings, ("risk.halt_status",), _call_use(verb, 0, {}))
 
 

@@ -1,0 +1,14 @@
+{
+  "task": "session-book-risk-standard",
+  "seat": "bot-02-risk",
+  "commands": [
+    {"cmd": "ruff check . && ruff format --check . && mypy src/ && pytest -q", "exit": 0, "note": "after characterization pin update; three pin tests had failed before the pin edit"},
+    {"cmd": "pytest -q tests/risk/test_session_book.py tests/tools/safety/test_verdict_standard.py tests/config/test_settings_surface_characterization.py tests/cli/test_backtest_verb_characterization.py::test_backtest_smoke_10m_report_is_pinned_verbatim tests/tools/test_genesis_fail_closed.py", "exit": 0},
+    {"cmd": "PUMPGROK_CONFIG overlay paper_equity_usd=100, autonomous-paper, pumpgrok run --mode paper --duration 120", "exit": 0, "note": "public mainnet, cwd with paid_rpc_provider: none. audits=19 kills=18 buys=0. attempted size 245642495 lamports. book 1228212478 lamports at sol_usd 81.419137. one CLEAR refused below_liquidity_floor. 19 HTTP 429 from the public RPC."}
+  ],
+  "not_verified": [
+    "make audit",
+    "a 30-minute session",
+    "LAYOUT_STATUS left unverified"
+  ]
+}

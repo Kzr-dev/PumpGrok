@@ -5,9 +5,11 @@ top_holders, deployer_history, market.liquidity) and scores 0..100
 (100 = safest) with per-check reasons. Thresholds come from config
 (``SafetyThresholds``) with an optional caller override; any check without
 data returns ``blind``, never an exception. A blind check on a required
-id, or a hard top-5 veto, forces ``verdict_recommendation = KILL``, except
-the SAFE-4/SAFE-8 holder pair stays advisory while no paid RPC provider is
-recorded (amendment 2026-10-25).
+id, a ``fail`` on a required id, or a hard top-5 veto, forces
+``verdict_recommendation = KILL``. The score does not override a failing
+check. The SAFE-4/SAFE-8 holder pair stays advisory while no paid RPC
+provider is recorded, and that exception is for ``blind`` only
+(amendment 2026-10-25).
 Recommendation only: RISK issues the verdict from the journaled report.
 
 ``creator`` is caller-supplied (creation event): the mint account carries
@@ -448,6 +450,30 @@ def _verdict(
     return "CLEAR"
 
 
+def recommend_verdict(
+    rows: list[CheckResult],
+    thresholds: SafetyThresholds,
+    *,
+    hard_veto: bool = False,
+) -> Literal["CLEAR", "CONDITIONAL", "KILL"]:
+    """CLEAR, CONDITIONAL, or KILL. A required fail is KILL even when the score is high."""
+    score = _score(rows)
+    advisory_active = not paid_rpc_provider_recorded()
+    blind_required = [
+        row.id
+        for row in rows
+        if row.status == "blind"
+        and row.id in REQUIRED_IDS
+        and not (advisory_active and row.id in HOLDER_ADVISORY_PAIR)
+    ]
+    required_fail = any(row.status == "fail" and row.id in REQUIRED_IDS for row in rows)
+    return _verdict(
+        score,
+        hard_veto or bool(blind_required) or required_fail,
+        thresholds,
+    )
+
+
 async def run_score_report(
     inp: ScoreReportIn,
     rpc: RpcClient,
@@ -472,19 +498,12 @@ async def run_score_report(
     top5 = Decimal(str((top or {}).get("top5_share", "0")))
     hard_veto = bool(top is not None and top5 > Decimal(str(active.top5_share_veto)))
     advisory_active = not paid_rpc_provider_recorded()
-    blind_required = [
-        r.id
-        for r in rows
-        if r.status == "blind"
-        and r.id in REQUIRED_IDS
-        and not (advisory_active and r.id in HOLDER_ADVISORY_PAIR)
-    ]
     advisory_blind_checks = [
         r.id
         for r in rows
         if r.status == "blind" and advisory_active and r.id in HOLDER_ADVISORY_PAIR
     ]
-    verdict = _verdict(score, hard_veto or bool(blind_required), active)
+    verdict = recommend_verdict(rows, active, hard_veto=hard_veto)
 
     out = {
         "score": int(score),

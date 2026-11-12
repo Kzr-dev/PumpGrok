@@ -41,9 +41,15 @@ from pumpgrok.replay.rng import make_rng
 from pumpgrok.risk.engine import RiskEngine
 from pumpgrok.risk.fast_audit import audit_mint, dumps_audit, rpc_min_interval_s
 from pumpgrok.risk.limits import EngineLimits
+from pumpgrok.risk.session_book import (
+    apply_book,
+    budget_for_book,
+    locked_book,
+    record_session_start,
+    resolve_session_book,
+)
 from pumpgrok.supervisor.exit_rules import LedgerExitBook
 from pumpgrok.supervisor.exit_watch import PriceTick, TickExitWatch
-from pumpgrok.tools import ensure_paper_genesis
 from pumpgrok.tools.market.jupiter import QUOTE_URL, get_quote
 from pumpgrok.tools.market.launch_feed import (
     Launch,
@@ -87,6 +93,7 @@ class PaperSessionReport:
     autonomy: str = "manual-ticket"
     journaled: int = 0
     quotes_stale: int = 0
+    attempted_lamports: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -132,6 +139,7 @@ def _journal(
     text: str,
     refs: list[str],
     note_kind: str = "verdict",
+    seat: str = "bot-09-journal",
 ) -> None:
     store.append(
         ts_utc=format_ts_utc(clock.now()),
@@ -141,7 +149,7 @@ def _journal(
         type="JournalNote",
         payload={
             "source": "paper",
-            "seat": "bot-09-journal",
+            "seat": seat,
             "note_kind": note_kind,
             "text": text,
             "refs": refs,
@@ -345,6 +353,7 @@ async def _handle_launch(
     if launch.mint in killed or launch.mint in attempted:
         return
     size = trade_size_lamports(deps.adapter.equity_lamports(), deps.budget, deps.limits)
+    report.attempted_lamports.append(size)
     ticket = allocate_ticket(
         deps.store,
         ts_utc=format_ts_utc(deps.clock.now()),
@@ -363,6 +372,7 @@ async def _handle_launch(
         text=str(audited.get("text") or verdict),
         refs=[ticket, launch.mint],
         note_kind="safety_report",
+        seat="bot-02-risk",
     )
     report.journaled += 1
     if deps.record is not None:
@@ -791,6 +801,29 @@ async def _subscribe_missing(
     return next_id
 
 
+async def _session_budget(
+    settings: Settings, store: LedgerStore, client: httpx.AsyncClient, clock: Clock
+) -> tuple[RiskBudget, str]:
+    """Resolve or reuse the book, then record the session-start row."""
+    opened = locked_book(store, settings.risk)
+    if opened is None:
+        opened = await resolve_session_book(settings.risk, client, settings.jupiter.quote_url)
+        budget = apply_book(store, settings.risk, opened)
+    else:
+        budget = budget_for_book(settings.risk, opened)
+    autonomy = read_autonomy(store)
+    record_session_start(
+        store,
+        clock,
+        book=opened,
+        budget=budget,
+        limits=settings.limits,
+        thresholds=settings.safety.thresholds,
+        autonomy=autonomy,
+    )
+    return budget, autonomy
+
+
 async def serve_public_paper(
     settings: Settings,
     *,
@@ -804,7 +837,7 @@ async def serve_public_paper(
     store = LedgerStore(str(path))
     client = httpx.AsyncClient()
     try:
-        ensure_paper_genesis(store, settings.risk)
+        budget, autonomy = await _session_budget(settings, store, client, clock)
         rpc = RpcClient(
             list(settings.rpc.endpoints),
             client,
@@ -818,10 +851,9 @@ async def serve_public_paper(
         curves: dict[str, str] = {}
         feed = RpcCurveFeed(rpc, curves)
         ids = IdFactory(clock, make_rng(settings.replay.seed))
-        autonomy = read_autonomy(store)
         risk = RiskEngine(
             store=store,
-            budget=settings.risk,
+            budget=budget,
             ids=IdFactory(clock, make_rng(settings.replay.seed)),
             clock=clock,
             limits=settings.limits,
@@ -835,7 +867,7 @@ async def serve_public_paper(
             ids=ids,
             clock=clock,
             rng=make_rng(settings.replay.seed),
-            budget=settings.risk,
+            budget=budget,
             limits=settings.limits,
             price_source=feed,
             p_drop=0.0,
@@ -871,7 +903,7 @@ async def serve_public_paper(
             risk=risk,
             adapter=adapter,
             exits=settings.exits,
-            budget=settings.risk,
+            budget=budget,
             limits=settings.limits,
             ids=ids,
             autonomy=autonomy,

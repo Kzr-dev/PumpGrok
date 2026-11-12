@@ -11,9 +11,13 @@ import json
 import sys
 from pathlib import Path
 
-from pumpgrok.cli.codes import EXIT_OK
+import httpx
+
+from pumpgrok.cli.codes import EXIT_CONFIG, EXIT_OK
 from pumpgrok.cli.errors import _say
 from pumpgrok.config.settings import Settings
+from pumpgrok.ledger.paths import PAPER_LEDGER_PATH
+from pumpgrok.ledger.store import LedgerStore
 from pumpgrok.replay.clock import WallClock
 from pumpgrok.risk.fast_audit import (
     audit_mint,
@@ -21,6 +25,7 @@ from pumpgrok.risk.fast_audit import (
     dumps_audit,
     resolve_curve_account,
 )
+from pumpgrok.risk.session_book import BookUnresolved, locked_book, resolve_session_book
 from pumpgrok.supervisor.live_paper import (
     collect_launches,
     serve_public_paper,
@@ -56,22 +61,39 @@ def risk_audit(args: object, settings: Settings) -> int:
     async def _run() -> dict[str, object]:
         rpc, client = build_audit_rpc(settings, WallClock())
         try:
+            equity = await _audit_equity(settings, client)
             return await audit_mint(
                 rpc,
                 mint=mint,
                 curve_account=curve_account,
                 creator=creator if isinstance(creator, str) and creator else None,
-                intended_size_lamports=trade_size_lamports(
-                    settings.risk.paper_equity_lamports, settings.risk, settings.limits
-                ),
+                intended_size_lamports=trade_size_lamports(equity, settings.risk, settings.limits),
                 ticket_id="SOL-19700101-000",
             )
         finally:
             await client.aclose()
 
-    payload = asyncio.run(_run())
+    try:
+        payload = asyncio.run(_run())
+    except BookUnresolved as exc:
+        _say(sys.stderr, f"session book unresolved: {exc}")
+        return EXIT_CONFIG
     _say(sys.stdout, dumps_audit(payload))
     return EXIT_OK
+
+
+async def _audit_equity(settings: Settings, client: httpx.AsyncClient) -> int:
+    """Locked ledger book, else the configured book. A missing quote refuses."""
+    if PAPER_LEDGER_PATH.exists():
+        store = LedgerStore(str(PAPER_LEDGER_PATH))
+        try:
+            locked = locked_book(store, settings.risk)
+        finally:
+            store.close()
+        if locked is not None:
+            return locked.equity_lamports
+    book = await resolve_session_book(settings.risk, client, settings.jupiter.quote_url)
+    return book.equity_lamports
 
 
 def scout_pipeline(args: object, settings: Settings) -> int:
@@ -123,15 +145,21 @@ def paper_duration(args: object, settings: Settings) -> int:
     duration = int(getattr(args, "duration", 0) or 0)
     record = getattr(args, "record", None)
     record_name = record if isinstance(record, str) and record else None
-    report = asyncio.run(
-        serve_public_paper(settings, duration_s=float(duration), record_name=record_name)
-    )
+    try:
+        report = asyncio.run(
+            serve_public_paper(settings, duration_s=float(duration), record_name=record_name)
+        )
+    except BookUnresolved as exc:
+        _say(sys.stderr, f"session book unresolved: {exc}")
+        return EXIT_CONFIG
     _say(
         sys.stdout,
         (
             f"paper session autonomy={report.autonomy} audits={report.audits} "
             f"kills={report.kills} buys={report.buys} sells={report.sells} "
-            f"halt={report.halted or 'none'} quotes_stale={report.quotes_stale}"
+            f"halt={report.halted or 'none'} quotes_stale={report.quotes_stale} "
+            "attempted_lamports="
+            + (",".join(str(size) for size in report.attempted_lamports) or "none")
         ),
     )
     if record_name:

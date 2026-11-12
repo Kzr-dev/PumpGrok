@@ -290,7 +290,8 @@ def ensure_paper_genesis(store: LedgerStore, budget: RiskBudget) -> None:
     A new, empty ledger gets its genesis from the budget (INT-02): the same meta
     row the replay runtime writes, so a fresh paper ledger reaches shutdown and
     the exit-halt without a CorruptState. Never overwritten: history keeps the
-    genesis it started with.
+    genesis it started with. A configured ``paper_equity_usd`` is not converted
+    here: the paper session quotes SOL/USD and writes that lamport book.
     """
     if store.get_meta("initial_equity_lamports") is not None:
         return
@@ -300,6 +301,8 @@ def ensure_paper_genesis(store: LedgerStore, budget: RiskBudget) -> None:
             "paper ledger has events but no initial_equity_lamports genesis",
             events=history,
         )
+    if budget.paper_equity_usd is not None:
+        return
     store.set_meta("initial_equity_lamports", str(budget.paper_equity_lamports))
 
 

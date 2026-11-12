@@ -42,7 +42,7 @@ PRE_V4_FIELDS: tuple[str, ...] = (
 
 PINNED_SECTION_DIGESTS: dict[str, str] = {
     "execution": "717144ed733a9c81a960bc445d94f19a79e7677cdc6b0070847d659e51f5fb2c",
-    "risk": "7b73f8ebece3612a00b973f1f402c9174c6b43bcaa4cb367bf6acf0eb3ee723e",
+    "risk": "c489a8cb6ec38b36567062f8d2ff8cbb99c44bd4b2d95d25e557c84f7117affa",
     "limits": "005a5d70a24265958cef1441c5aa0d0ced919986defa941091361598e51c5557",
     "replay": "4e949265d09c7f086f0568a752a46ffc91eafba9541f0cdf453eb53db5d230ba",
     "live": "d06968acdda3fe67966ab7d79cfac8cf03cb7c60bf803972a661296ff021bfe2",
