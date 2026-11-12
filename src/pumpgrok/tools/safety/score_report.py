@@ -17,7 +17,8 @@ veto is armed but dormant while off-chain enrichment is unwired.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -203,47 +204,62 @@ async def _fetch(call: Awaitable[dict[str, Any]]) -> dict[str, Any] | None:
         return None
 
 
+async def _optional(
+    call: Coroutine[Any, Any, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Await one reader. ``None`` means the check did not need that reader."""
+    if call is None:
+        return None
+    return await _fetch(call)
+
+
 async def _read_all(inp: ScoreReportIn, rpc: RpcClient, runnable: list[CheckId]) -> _Readings:
-    """Run only the readers the runnable checks need, in the fixed reader order."""
+    """Run the readers the runnable checks need, concurrently, in a fixed result order."""
     needed: set[str] = set(runnable)
-    auth = (
-        await _fetch(run_authorities(AuthoritiesIn(mint=inp.mint), rpc))
+    auth_call = (
+        run_authorities(AuthoritiesIn(mint=inp.mint), rpc)
         if {"mint_authority", "freeze_authority"} & needed
         else None
     )
-    lp = (
-        await _fetch(run_lp_status(LpStatusIn(mint=inp.mint, curve_account=inp.curve_account), rpc))
+    lp_call = (
+        run_lp_status(LpStatusIn(mint=inp.mint, curve_account=inp.curve_account), rpc)
         if "lp_status" in needed
         else None
     )
-    meta = (
-        await _fetch(run_token_metadata(TokenMetadataIn(mint=inp.mint), rpc))
+    meta_call = (
+        run_token_metadata(TokenMetadataIn(mint=inp.mint), rpc)
         if "token2022_extensions" in needed
         else None
     )
-    top = (
-        await _fetch(run_top_holders(TopHoldersIn(mint=inp.mint), rpc))
+    top_call = (
+        run_top_holders(TopHoldersIn(mint=inp.mint), rpc)
         if "top10_concentration" in needed
         else None
     )
-    dep = (
-        await _fetch(run_deployer_history(DeployerHistoryIn(creator=inp.creator or ""), rpc))
+    dep_call = (
+        run_deployer_history(DeployerHistoryIn(creator=inp.creator), rpc)
         if "deployer_history" in needed and inp.creator is not None
         else None
     )
-    liq = (
-        await _fetch(
-            run_liquidity(
-                LiquidityIn(
-                    mint=inp.mint,
-                    curve_account=inp.curve_account,
-                    order_size_lamports=inp.intended_size_lamports,
-                ),
-                rpc,
-            )
+    liq_call = (
+        run_liquidity(
+            LiquidityIn(
+                mint=inp.mint,
+                curve_account=inp.curve_account,
+                order_size_lamports=inp.intended_size_lamports,
+            ),
+            rpc,
         )
         if "liquidity_depth" in needed
         else None
+    )
+    auth, lp, meta, top, dep, liq = await asyncio.gather(
+        _optional(auth_call),
+        _optional(lp_call),
+        _optional(meta_call),
+        _optional(top_call),
+        _optional(dep_call),
+        _optional(liq_call),
     )
     return _Readings(auth=auth, lp=lp, meta=meta, top=top, dep=dep, liq=liq)
 

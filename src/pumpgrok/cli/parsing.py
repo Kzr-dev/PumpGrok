@@ -98,6 +98,15 @@ def _add_scout(verbs: _VerbsAction, mode_option: _Parser) -> None:
     scout_pipeline = scout_cmd.add_parser("pipeline", help="ingest pipeline candidates")
     scout_pipeline.add_argument("--candidates", action="store_true", help="read candidates")
     scout_pipeline.add_argument("--limit", type=int, default=5, help="max candidates this run")
+    scout_pipeline.add_argument(
+        "--fixture", default=None, help="offline events.jsonl or dataset directory"
+    )
+    scout_pipeline.add_argument(
+        "--timeout",
+        type=float,
+        default=0,
+        help="seconds to listen for new mints; 0 lists nothing and opens no socket",
+    )
 
 
 def _add_risk_chief_rug(verbs: _VerbsAction, mode_option: _Parser) -> None:
@@ -105,6 +114,11 @@ def _add_risk_chief_rug(verbs: _VerbsAction, mode_option: _Parser) -> None:
     risk_cmd = risk.add_subparsers(dest="cmd", required=True, metavar="RISK")
     risk_audit = risk_cmd.add_parser("audit", help="audit open leads")
     risk_audit.add_argument("--pending", action="store_true", help="audit pending leads only")
+    risk_audit.add_argument("--mint", default=None, help="mint to audit")
+    risk_audit.add_argument(
+        "--curve-account", dest="curve_account", default=None, help="bonding-curve account"
+    )
+    risk_audit.add_argument("--creator", default=None, help="creator public key, when known")
     chief = verbs.add_parser("chief", parents=[mode_option], help="chief verbs")
     chief_cmd = chief.add_subparsers(dest="cmd", required=True, metavar="CHIEF")
     chief_cmd.add_parser("pickup", help="route CLEAR/CONDITIONAL briefs to tickets")

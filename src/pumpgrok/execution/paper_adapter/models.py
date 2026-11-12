@@ -25,6 +25,8 @@ class CurveSnapshot(BaseModel):
     t_units: int
     complete: bool = False
     source: str = "fixture"
+    #: ``pump`` is the documented discriminator. ``assumed`` stays fail-closed on RPC.
+    layout: str = "assumed"
     slot: int | None = None
     # Recorded time of the reading (fixture tick time). None for a live read, which is
     # priced at the moment it is taken.
