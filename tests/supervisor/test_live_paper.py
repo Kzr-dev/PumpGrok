@@ -187,9 +187,12 @@ async def test_autonomous_paper_buys_once_through_the_adapter(tmp_path: Path) ->
 
 async def test_manual_ticket_does_not_buy(tmp_path: Path) -> None:
     deps = _deps(tmp_path, autonomy="manual-ticket", launches=[_launch()], quote=_quote())
+    recorded: list[dict[str, Any]] = []
+    deps.record = recorded.append
     report = await _drive(deps, 5)
     assert report.buys == 0
     assert report.audits == 1
+    assert recorded and recorded[0]["mint"] == MINT
     assert not [row for row in deps.store.read(limit=None) if row["type"] == "OrderPlaced"]
 
 

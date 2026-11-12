@@ -14,6 +14,7 @@ Nothing raised or logged here carries an endpoint URL, a header value, or
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 from collections.abc import Sequence
@@ -98,6 +99,7 @@ class RpcClient:
         max_attempts_per_endpoint: int = 3,
         retry: RetryPolicy | None = None,
         cache_ttl_s: float = 0.0,
+        min_interval_s: float = 0.0,
     ) -> None:
         if not endpoints:
             raise RpcError("rpc misconfigured: no endpoints")
@@ -118,6 +120,9 @@ class RpcClient:
         self._retry = retry
         self._cache_ttl_s = cache_ttl_s
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._min_interval_s = min_interval_s
+        self._last_http_at: float | None = None
+        self._pace_lock = asyncio.Lock()
 
     @property
     def clock(self) -> Clock:
@@ -172,10 +177,27 @@ class RpcClient:
             hit = self._cache.get(key)
             if hit is not None and self._clock.now() - hit[0] <= self._cache_ttl_s:
                 return hit[1]
-        result = await self._call_uncached(method, params)
+        result = await self._paced(method, params)
         if key:
             self._cache[key] = (self._clock.now(), result)
         return result
+
+    async def _paced(self, method: str, params: list[Any]) -> Any:
+        """One HTTP attempt at a time when a minimum interval is set.
+
+        The lock is held across the request so a burst cannot leave the
+        client. A zero interval keeps the historical unpaced path.
+        """
+        if self._min_interval_s <= 0:
+            return await self._call_uncached(method, params)
+        async with self._pace_lock:
+            now = self._clock.monotonic()
+            if self._last_http_at is not None:
+                wait = self._min_interval_s - (now - self._last_http_at)
+                if wait > 0:
+                    await self._clock.sleep(wait)
+            self._last_http_at = self._clock.monotonic()
+            return await self._call_uncached(method, params)
 
     async def _call_uncached(self, method: str, params: list[Any]) -> Any:
         bad_bodies = 0

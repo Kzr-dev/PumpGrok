@@ -10,20 +10,46 @@ recorded. A KILL is final for the mint in the calling session.
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
 
 from pumpgrok.config.settings import Settings
 from pumpgrok.core.ids import Clock
+from pumpgrok.core.tool import RetryPolicy
 from pumpgrok.replay.clock import WallClock
 from pumpgrok.replay.rng import make_rng
 from pumpgrok.tools.onchain.pump_pda import bonding_curve_pda
 from pumpgrok.tools.onchain.rpc import RpcClient
 from pumpgrok.tools.safety.checks import CHECK_IDS
+from pumpgrok.tools.safety.provider import paid_rpc_provider_recorded
 from pumpgrok.tools.safety.score_report import ScoreReportIn, run_score_report
 
 _AUDIT_CACHE_S = 2.0
+#: Public mainnet budget: one request per second, no burst. Paid RPC is unpaced.
+PUBLIC_RPC_MIN_INTERVAL_S = 1.0
+
+
+def rpc_min_interval_s() -> float:
+    """Spacing between RPC calls. Zero when a paid provider is recorded."""
+    if paid_rpc_provider_recorded():
+        return 0.0
+    return PUBLIC_RPC_MIN_INTERVAL_S
+
+
+def _json_ready(value: Any) -> Any:
+    """Replace ``Decimal`` and ``datetime`` so ``json.dumps`` cannot raise."""
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 def audit_text(report: dict[str, Any], *, mint: str, ticket_id: str) -> str:
@@ -72,7 +98,10 @@ def finalize_report(report: dict[str, Any], *, mint: str, ticket_id: str) -> dic
         "score": report.get("score"),
         "text": audit_text(report, mint=mint, ticket_id=ticket_id),
     }
-    return body
+    ready = _json_ready(body)
+    if not isinstance(ready, dict):
+        return body
+    return ready
 
 
 async def audit_mint(
@@ -111,6 +140,8 @@ def build_audit_rpc(
         make_rng(settings.replay.seed),
         api_key=settings.rpc.api_key,
         cache_ttl_s=_AUDIT_CACHE_S,
+        min_interval_s=rpc_min_interval_s(),
+        retry=RetryPolicy(attempts=1, base_s=0.5, max_s=2.0),
     )
     return rpc, client
 
@@ -123,5 +154,5 @@ def resolve_curve_account(mint: str, curve_account: str | None) -> str:
 
 
 def dumps_audit(payload: dict[str, Any]) -> str:
-    """One JSON line. ``text`` keeps the human checklist inside the object."""
-    return json.dumps(payload)
+    """One JSON line. ``Decimal`` weights and datetimes are encoded, never raised."""
+    return json.dumps(_json_ready(payload))
