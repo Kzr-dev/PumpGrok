@@ -310,6 +310,7 @@ def _reader_rows(
     evidence: list[Evidence],
     *,
     clock: Clock,
+    deployer_advisory: bool = False,
 ) -> list[CheckResult]:
     """Rows for the data-backed checks, in the stable report order."""
     rows: list[CheckResult] = []
@@ -375,7 +376,7 @@ def _reader_rows(
                 _reader_row(
                     "deployer_history",
                     readings.dep,
-                    check_deployer_history,
+                    lambda dep: check_deployer_history(dep, advisory=deployer_advisory),
                     clock,
                     weight=Decimal("0.10"),
                     blind_reason="creator window unreadable",
@@ -479,6 +480,7 @@ async def run_score_report(
     rpc: RpcClient,
     *,
     thresholds: SafetyThresholds | None = None,
+    deployer_advisory: bool = False,
 ) -> dict[str, Any]:
     """Compose the readers and return a validated ``ScoreReportOut`` payload."""
     active = resolve_thresholds(inp.thresholds, thresholds)
@@ -490,7 +492,15 @@ async def run_score_report(
 
     evidence: list[Evidence] = []
     readings = await _read_all(inp, rpc, runnable)
-    rows = _reader_rows(inp, runnable, readings, active, evidence, clock=rpc.clock)
+    rows = _reader_rows(
+        inp,
+        runnable,
+        readings,
+        active,
+        evidence,
+        clock=rpc.clock,
+        deployer_advisory=deployer_advisory,
+    )
     rows.extend(_advisory_rows(wanted, evidence, rpc.clock))
 
     score = _score(rows)

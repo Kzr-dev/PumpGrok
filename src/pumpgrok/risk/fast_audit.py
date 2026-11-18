@@ -136,6 +136,7 @@ async def audit_mint(
     creator: str | None,
     intended_size_lamports: int,
     ticket_id: str = "SOL-19700101-000",
+    deployer_advisory: bool = False,
 ) -> dict[str, Any]:
     """Run the ten checks once. The returned KILL is final for the caller to record."""
     report = await run_score_report(
@@ -147,8 +148,16 @@ async def audit_mint(
         ),
         rpc,
         thresholds=None,
+        deployer_advisory=deployer_advisory,
     )
     return finalize_report(report, mint=mint, ticket_id=ticket_id)
+
+
+def paper_deployer_advisory(settings: Settings) -> bool:
+    """Honor the overlay only while the effective execution mode is paper."""
+    return (
+        settings.effective_mode == "paper" and settings.safety.deployer_history_mode == "advisory"
+    )
 
 
 def build_audit_rpc(

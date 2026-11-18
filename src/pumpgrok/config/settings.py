@@ -444,9 +444,14 @@ def load_settings(**kwargs: Any) -> Settings:
     if problems:
         raise ConfigError(problems)
     try:
-        return Settings(**kwargs)
+        settings = Settings(**kwargs)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(exc)) from exc
+    if settings.safety.deployer_history_mode == "advisory" and settings.effective_mode != "paper":
+        raise ConfigError(
+            ["safety.deployer_history_mode advisory is refused unless execution mode is paper"]
+        )
+    return settings
 
 
 def health_port(settings: Settings, *, once: bool = False, replay: str | None = None) -> int:

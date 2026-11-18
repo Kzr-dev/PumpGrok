@@ -50,26 +50,20 @@ class _Socket:
 
 def test_portal_delivers_one_create_and_records_the_subscription(monkeypatch) -> None:
     curve = bonding_curve_pda(MINT)
-    raw = json.dumps(
-        {"txType": "create", "mint": MINT, "bondingCurveKey": curve, "name": "Paper"}
-    )
+    raw = json.dumps({"txType": "create", "mint": MINT, "bondingCurveKey": curve, "name": "Paper"})
     socket = _Socket([raw])
 
     def connect(*_args: object, **_kwargs: object) -> _Socket:
         return socket
 
     monkeypatch.setattr("pumpgrok.supervisor.live_paper.open_public_socket", connect)
-    monkeypatch.setattr(
-        "pumpgrok.supervisor.live_paper.discovery_delay", lambda *_a, **_k: 0.0
-    )
+    monkeypatch.setattr("pumpgrok.supervisor.live_paper.discovery_delay", lambda *_a, **_k: 0.0)
 
     async def run() -> None:
         queue: asyncio.Queue = asyncio.Queue()
         seen: set[str] = set()
         portal: dict[str, float] = {}
-        task = asyncio.create_task(
-            _listen_creates(URL, queue, WallClock(), seen, portal)
-        )
+        task = asyncio.create_task(_listen_creates(URL, queue, WallClock(), seen, portal))
         launch = await asyncio.wait_for(queue.get(), timeout=2)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -101,9 +95,7 @@ def test_program_logs_enqueue_a_create_when_the_portal_is_quiet(monkeypatch) -> 
         return socket
 
     monkeypatch.setattr("pumpgrok.supervisor.live_paper.open_public_socket", connect)
-    monkeypatch.setattr(
-        "pumpgrok.supervisor.live_paper.discovery_delay", lambda *_a, **_k: 0.0
-    )
+    monkeypatch.setattr("pumpgrok.supervisor.live_paper.discovery_delay", lambda *_a, **_k: 0.0)
 
     class _Rpc:
         async def call(self, method: str, params: list[object]) -> dict[str, object]:

@@ -39,7 +39,12 @@ from pumpgrok.ledger.tickets import allocate_ticket
 from pumpgrok.replay.clock import WallClock, format_ts_utc
 from pumpgrok.replay.rng import make_rng
 from pumpgrok.risk.engine import RiskEngine
-from pumpgrok.risk.fast_audit import audit_mint, dumps_audit, rpc_min_interval_s
+from pumpgrok.risk.fast_audit import (
+    audit_mint,
+    dumps_audit,
+    paper_deployer_advisory,
+    rpc_min_interval_s,
+)
 from pumpgrok.risk.limits import EngineLimits
 from pumpgrok.risk.session_book import (
     apply_book,
@@ -657,7 +662,9 @@ def default_quote(client: Any, *, quote_url: str = QUOTE_URL) -> QuoteCall:
     return quote
 
 
-def audit_with(rpc: RpcClient) -> Callable[[Launch, str, int], Awaitable[dict[str, Any]]]:
+def audit_with(
+    rpc: RpcClient, *, deployer_advisory: bool = False
+) -> Callable[[Launch, str, int], Awaitable[dict[str, Any]]]:
     async def audit(launch: Launch, ticket: str, size: int) -> dict[str, Any]:
         try:
             report = await audit_mint(
@@ -667,6 +674,7 @@ def audit_with(rpc: RpcClient) -> Callable[[Launch, str, int], Awaitable[dict[st
                 creator=launch.creator,
                 intended_size_lamports=size,
                 ticket_id=ticket,
+                deployer_advisory=deployer_advisory,
             )
             dumps_audit(report)
         except (TypeError, ValueError):
@@ -1008,6 +1016,7 @@ async def _session_budget(
         limits=settings.limits,
         thresholds=settings.safety.thresholds,
         autonomy=autonomy,
+        deployer_history_mode=settings.safety.deployer_history_mode,
     )
     return budget, autonomy
 
@@ -1096,7 +1105,7 @@ async def serve_public_paper(
             ids=ids,
             autonomy=autonomy,
             discover=discover,
-            audit=audit_with(rpc),
+            audit=audit_with(rpc, deployer_advisory=paper_deployer_advisory(settings)),
             quote=default_quote(client, quote_url=settings.jupiter.quote_url),
             price_for=price_for,
             ticks=ticks,

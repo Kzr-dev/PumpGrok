@@ -169,9 +169,24 @@ def test_session_start_records_the_book_and_a_blind_acceptance(tmp_path: Path) -
     assert "blind_acceptance=CONSUMED" in note["text"]
     assert "renew=state accept-blind" in note["text"]
     assert "blind_acceptance_by=human:op" in note["text"]
+    assert "deployer_history_mode=required" in note["text"]
     changed = store.read(types=["ConfigChanged"], limit=None)[-1]["payload"]
     assert changed["new_hash"] == digest
     assert "session_book" in changed["keys_changed"]
+    assert "deployer_history_mode" in changed["keys_changed"]
+    advisory = record_session_start(
+        store,
+        FixtureClock(1_700_000_001),
+        book=book,
+        budget=budget,
+        limits=EngineLimits(),
+        thresholds=SafetyThresholds(),
+        autonomy="autonomous-paper",
+        deployer_history_mode="advisory",
+    )
+    later = store.read(types=["JournalNote"], limit=None)[-1]["payload"]
+    assert "deployer_history_mode=advisory" in later["text"]
+    assert advisory != digest
     assert config_hash(budget, EngineLimits(), SafetyThresholds(), book, "manual-ticket") != digest
     consumed = [
         row

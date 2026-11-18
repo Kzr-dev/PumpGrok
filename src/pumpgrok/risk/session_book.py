@@ -236,6 +236,8 @@ def config_hash(
     thresholds: SafetyThresholds,
     book: SessionBook,
     autonomy: str,
+    *,
+    deployer_history_mode: str = "required",
 ) -> str:
     """sha256 of the book, the autonomy level, and the risk and safety settings."""
     payload = {
@@ -249,6 +251,7 @@ def config_hash(
         "risk": _stable(budget.model_dump(mode="python")),
         "limits": _stable(limits.model_dump(mode="python")),
         "safety": _stable(thresholds.model_dump(mode="python")),
+        "deployer_history_mode": deployer_history_mode,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -330,10 +333,18 @@ def record_session_start(
     limits: EngineLimits,
     thresholds: SafetyThresholds,
     autonomy: str,
+    deployer_history_mode: str = "required",
 ) -> str:
     """Append the session book, autonomy, config hash and blind-acceptance decision."""
     ts_utc = format_ts_utc(clock.now())
-    digest = config_hash(budget, limits, thresholds, book, autonomy)
+    digest = config_hash(
+        budget,
+        limits,
+        thresholds,
+        book,
+        autonomy,
+        deployer_history_mode=deployer_history_mode,
+    )
     acceptance = open_blind_acceptance(store)
     accepted = acceptance is not None
     by = str(acceptance.get("approved_by")) if acceptance else "none"
@@ -349,6 +360,7 @@ def record_session_start(
             f"denomination={book.denomination}",
             f"paper_equity_usd={usd}",
             f"sol_usd={sol_usd}",
+            f"deployer_history_mode={deployer_history_mode}",
             f"evidence={book.evidence}",
             f"blind_acceptance={'CONSUMED' if accepted else 'NO'}",
             f"blind_acceptance_by={by}",
@@ -368,7 +380,7 @@ def record_session_start(
             "payload": {
                 "source": "paper",
                 "by": "desk",
-                "keys_changed": ["session_book", "config_hash"],
+                "keys_changed": ["session_book", "config_hash", "deployer_history_mode"],
                 "old_hash": "",
                 "new_hash": digest,
             },

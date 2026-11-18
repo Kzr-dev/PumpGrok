@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pumpgrok.cli import main
+from pumpgrok.config.sections.engine import SafetySettings
 from pumpgrok.config.settings import (
     ConfigError,
     Settings,
@@ -17,6 +18,7 @@ from pumpgrok.config.settings import (
     find_unknown_env,
     load_settings,
 )
+from pumpgrok.risk.fast_audit import paper_deployer_advisory
 
 
 @pytest.fixture
@@ -135,3 +137,34 @@ def test_live_profile_loads_and_gate_refuses_startup(
         finally:
             conn.close()
     assert not types & {"OrderPlaced", "FillRecorded"}
+
+
+def test_advisory_deployer_history_loads_in_paper_and_refuses_live(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paper = _write_toml(
+        tmp_path / "paper.toml",
+        '[safety]\ndeployer_history_mode = "advisory"\n',
+    )
+    monkeypatch.setenv("PUMPGROK_CONFIG", paper)
+    loaded = load_settings()
+    assert loaded.effective_mode == "paper"
+    assert loaded.safety.deployer_history_mode == "advisory"
+    assert paper_deployer_advisory(loaded) is True
+
+    live = _write_toml(
+        tmp_path / "live.toml",
+        '[execution]\nmode = "live"\n[safety]\ndeployer_history_mode = "advisory"\n',
+    )
+    monkeypatch.setenv("PUMPGROK_CONFIG", live)
+    with pytest.raises(ConfigError, match="execution mode is paper"):
+        load_settings()
+
+
+def test_constructed_live_settings_ignore_the_advisory_key(clean_env: None) -> None:
+    settings = Settings(
+        mode="live",
+        safety=SafetySettings(deployer_history_mode="advisory"),
+    )
+    assert settings.safety.deployer_history_mode == "advisory"
+    assert paper_deployer_advisory(settings) is False
