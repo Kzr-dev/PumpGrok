@@ -92,6 +92,8 @@ class TickExitWatch:
         signal = apply_price(position, tick.price, self.book.exit_config, tick.ts)
         if signal is None:
             return None
+        # Drop it before the sell so the next tick in this drain cannot fire again.
+        self.book.positions.pop(position.mint, None)
         log.info(
             "exiting %s on %s (%s)",
             position.mint[:8],
