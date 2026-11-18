@@ -321,6 +321,7 @@ def _reader_rows(
     *,
     clock: Clock,
     deployer_advisory: bool = False,
+    exploratory: bool = False,
 ) -> list[CheckResult]:
     """Rows for the data-backed checks, in the stable report order."""
     rows: list[CheckResult] = []
@@ -398,7 +399,11 @@ def _reader_rows(
             _reader_row(
                 "token2022_extensions",
                 readings.meta,
-                check_token2022_extensions,
+                lambda meta: check_token2022_extensions(
+                    meta,
+                    exploratory=exploratory,
+                    transfer_tax_hard_fail_pct=active.transfer_tax_hard_fail_pct,
+                ),
                 clock,
                 weight=Decimal("0.05"),
                 blind_reason="mint metadata unreadable",
@@ -481,11 +486,6 @@ def _advisory_copy(row: CheckResult) -> CheckResult:
     return row.model_copy(update={"status": status, "reason": reason})
 
 
-def _sell_blocked(reason: str) -> bool:
-    folded = reason.casefold().replace("_", "").replace("-", "").replace(" ", "")
-    return "transferhook" in folded or "nontransferable" in folded
-
-
 def _apply_exploratory(rows: list[CheckResult], liq: dict[str, Any] | None) -> list[CheckResult]:
     """Keep the short paper hard list. Everything else stays in the notes."""
     graduated = bool(liq and liq.get("graduated") is True)
@@ -501,21 +501,8 @@ def _apply_exploratory(rows: list[CheckResult], liq: dict[str, Any] | None) -> l
                 )
             )
             continue
-        if row.id == "token2022_extensions" and _sell_blocked(row.reason):
-            rewritten.append(
-                row.model_copy(
-                    update={
-                        "status": "fail",
-                        "reason": (
-                            f"{row.reason}; a transfer hook or non-transferable "
-                            "extension blocks a sell"
-                        ),
-                    }
-                )
-            )
-            continue
         if row.id == "liquidity_depth" and row.status == "fail":
-            if str(row.reason).startswith("no measurable") or row.value in (0, 0.0):
+            if row.value in (0, 0.0):
                 rewritten.append(row)
             else:
                 rewritten.append(_advisory_copy(row))
@@ -616,6 +603,7 @@ async def run_score_report(
         evidence,
         clock=rpc.clock,
         deployer_advisory=deployer_advisory or exploratory,
+        exploratory=exploratory,
     )
     rows.extend(_advisory_rows(wanted, evidence, rpc.clock))
     if exploratory:

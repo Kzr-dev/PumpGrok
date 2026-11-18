@@ -272,6 +272,9 @@ async def _sell(
         exit_reason=rule,
         correlation_id="live-paper",
     )
+    open_units = getattr(adapter, "_open_units", None)
+    if open_units is not None and open_units(position.mint) <= 0:
+        return
     try:
         await adapter.place(
             request,
@@ -282,6 +285,8 @@ async def _sell(
     except OrderUnknownError:
         log.warning("exit unknown mint=%s; not retried", position.mint[:8])
     except OrderRejectedError as exc:
+        if exc.reason == "no_position":
+            return
         log.info("exit refused mint=%s reason=%s", position.mint[:8], exc.reason)
 
 
@@ -567,6 +572,72 @@ def _close_session(deps: LivePaperDeps, report: PaperSessionReport) -> None:
     report.journaled += 1
 
 
+async def _collect_ranked(
+    deps: LivePaperDeps,
+    *,
+    deadline: float,
+    last_exit: float,
+    poll_s: float,
+    halted: str | None,
+    killed: set[str],
+    attempted: set[str],
+    report: PaperSessionReport,
+    book: LedgerExitBook,
+    watch: TickExitWatch,
+) -> tuple[list[tuple[Launch, str, int, Decimal]], float]:
+    """Audit the queued launches, polling exits on the configured interval."""
+    ranked: list[tuple[Launch, str, int, Decimal]] = []
+    for launch in await deps.discover():
+        if deps.clock.now() >= deadline:
+            break
+        if deps.clock.now() - last_exit >= poll_s:
+            await _exit_open(deps, book, watch, report)
+            last_exit = deps.clock.now()
+        chosen = await _handle_launch(
+            deps,
+            launch,
+            halted=halted,
+            deadline=deadline,
+            killed=killed,
+            attempted=attempted,
+            report=report,
+        )
+        if chosen is not None:
+            ranked.append(chosen)
+    ranked.sort(key=lambda item: item[3], reverse=True)
+    return ranked, last_exit
+
+
+async def _buy_ranked(
+    deps: LivePaperDeps,
+    ranked: list[tuple[Launch, str, int, Decimal]],
+    *,
+    deadline: float,
+    halted: str | None,
+    attempted: set[str],
+    report: PaperSessionReport,
+) -> None:
+    """Buy the best-ranked clears that still fit the open and daily caps."""
+    for launch, ticket, size, _rank in ranked:
+        open_count = len(await deps.adapter.positions())
+        trades_today = int(deps.adapter._fold_state().counters.trades_today)
+        if trades_today >= int(deps.budget.max_trades_per_day):
+            break
+        if not _entry_allowed(deps, launch, "CLEAR", halted, open_count):
+            continue
+        await _mark_open(deps)
+        await _quote_and_buy(
+            deps,
+            launch,
+            ticket,
+            size,
+            deadline=deadline,
+            attempted=attempted,
+            report=report,
+        )
+        await _mark_open(deps)
+
+
 async def run_live_paper(deps: LivePaperDeps, *, duration_s: float) -> PaperSessionReport:
     """Run until ``duration_s`` of injected clock time has passed."""
     report = PaperSessionReport(autonomy=deps.autonomy)
@@ -575,41 +646,26 @@ async def run_live_paper(deps: LivePaperDeps, *, duration_s: float) -> PaperSess
     book = LedgerExitBook(deps.exits)
     watch = TickExitWatch(book, _bound_sell(deps), deps.clock)
     deadline = deps.clock.now() + duration_s
+    last_exit = deps.clock.now()
+    poll_s = float(deps.exits.stop_loss_poll_seconds)
     while deps.clock.now() < deadline:
         reason = halt_reason(deps.risk)
         report.halted = reason
-        ranked: list[tuple[Launch, str, int, Decimal]] = []
-        for launch in await deps.discover():
-            chosen = await _handle_launch(
-                deps,
-                launch,
-                halted=reason,
-                deadline=deadline,
-                killed=killed,
-                attempted=attempted,
-                report=report,
-            )
-            if chosen is not None:
-                ranked.append(chosen)
-        ranked.sort(key=lambda item: item[3], reverse=True)
-        for launch, ticket, size, _rank in ranked:
-            open_count = len(await deps.adapter.positions())
-            trades_today = int(deps.adapter._fold_state().counters.trades_today)
-            if trades_today >= int(deps.budget.max_trades_per_day):
-                break
-            if not _entry_allowed(deps, launch, "CLEAR", reason, open_count):
-                continue
-            await _mark_open(deps)
-            await _quote_and_buy(
-                deps,
-                launch,
-                ticket,
-                size,
-                deadline=deadline,
-                attempted=attempted,
-                report=report,
-            )
-            await _mark_open(deps)
+        ranked, last_exit = await _collect_ranked(
+            deps,
+            deadline=deadline,
+            last_exit=last_exit,
+            poll_s=poll_s,
+            halted=reason,
+            killed=killed,
+            attempted=attempted,
+            report=report,
+            book=book,
+            watch=watch,
+        )
+        await _buy_ranked(
+            deps, ranked, deadline=deadline, halted=reason, attempted=attempted, report=report
+        )
         for mint in list(deps.pending):
             if mint in attempted or mint in killed:
                 deps.pending.pop(mint, None)
@@ -625,6 +681,7 @@ async def run_live_paper(deps: LivePaperDeps, *, duration_s: float) -> PaperSess
                 report=report,
             )
         await _exit_open(deps, book, watch, report)
+        last_exit = deps.clock.now()
         remaining = deadline - deps.clock.now()
         if remaining <= 0:
             break

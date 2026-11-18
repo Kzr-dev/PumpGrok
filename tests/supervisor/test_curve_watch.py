@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from pathlib import Path
 
 from pumpgrok.config.settings import SafetyThresholds
 from pumpgrok.core.errors import OrderRejectedError
@@ -207,6 +208,38 @@ def test_refused_exit_is_not_retried(tmp_path) -> None:
 
     asyncio.run(run())
     assert adapter.calls == 1
+
+
+def test_a_flat_mint_does_not_place_another_sell(tmp_path: Path) -> None:
+    store = LedgerStore(str(tmp_path / "ledger.sqlite"))
+    clock = FixtureClock(20)
+    ids = IdFactory(clock, make_rng(3))
+    position = ExitPosition(mint=MINT, token_amount=10, entry_price=1, peak_price=1)
+
+    class _Flat:
+        calls = 0
+
+        def _open_units(self, _mint: str) -> int:
+            return 0
+
+        async def place(self, *_args: object, **_kwargs: object) -> None:
+            self.calls += 1
+
+    adapter = _Flat()
+
+    async def run() -> None:
+        await _sell(
+            adapter,  # type: ignore[arg-type]
+            ids,
+            store,
+            clock,
+            position,
+            reason="stop_loss",
+            slippage_bps=50,
+        )
+
+    asyncio.run(run())
+    assert adapter.calls == 0
 
 
 def test_confirmation_band_and_reader_edges() -> None:

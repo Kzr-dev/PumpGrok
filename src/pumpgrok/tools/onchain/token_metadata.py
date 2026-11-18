@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from pydantic import Field
+
 from pumpgrok.core.errors import DataStale
 from pumpgrok.core.ids import ambient_correlation
 from pumpgrok.core.side_effect import SideEffect
@@ -18,6 +20,7 @@ from pumpgrok.core.tool import Tool, ToolInput, ToolOutput, ToolSpec, tool
 from pumpgrok.tools._common import J5, SOLANA_RPC_SOURCE, MintStr, meta_now
 from pumpgrok.tools.onchain.authorities import check_mint
 from pumpgrok.tools.onchain.rpc import RpcClient
+from pumpgrok.tools.safety.checks.readers import extension_records
 
 
 class TokenMetadataIn(ToolInput):
@@ -34,6 +37,7 @@ class TokenMetadataOut(ToolOutput):
     is_initialized: bool
     program: Literal["spl-token", "token-2022"]
     extensions: list[str]
+    extension_details: list[dict[str, Any]] = Field(default_factory=list)
     name: str | None = None
     symbol: str | None = None
     uri: str | None = None
@@ -68,7 +72,9 @@ async def run_token_metadata(inp: TokenMetadataIn, rpc: RpcClient) -> dict[str, 
         decimals = int(result["decimals"])
         supply = str(result["supply"])
         initialized = bool(result["isInitialized"])
-        extensions = [str(e) for e in (result.get("extensions") or [])]
+        raw_extensions = result.get("extensions") or []
+        details = extension_records(raw_extensions)
+        extensions = [str(record["name"]) for record in details if record.get("name")]
     except (KeyError, ValueError, TypeError) as exc:
         raise DataStale(f"onchain.token_metadata malformed mint={inp.mint}") from exc
     out = {
@@ -77,6 +83,7 @@ async def run_token_metadata(inp: TokenMetadataIn, rpc: RpcClient) -> dict[str, 
         "is_initialized": initialized,
         "program": "token-2022" if extensions else "spl-token",
         "extensions": extensions,
+        "extension_details": details,
         "name": None,
         "symbol": None,
         "uri": None,

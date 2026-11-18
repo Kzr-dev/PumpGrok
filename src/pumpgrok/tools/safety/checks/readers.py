@@ -113,22 +113,130 @@ def check_deployer_history(dep: dict[str, Any], *, advisory: bool = False) -> Ch
     )
 
 
-def check_token2022_extensions(meta: dict[str, Any]) -> CheckResult:
-    """Warn when transfer-hook-style extensions are present."""
-    extensions = [str(item) for item in (meta.get("extensions") or [])]
-    count = len(extensions)
-    listed = ", ".join(extensions)
+def _extension_state(item: Any) -> tuple[str, dict[str, Any]]:
+    """Name and state of one parsed extension. A bare string is a name only."""
+    if isinstance(item, dict) and "extension" not in item and "name" in item:
+        state = item.get("state")
+        return str(item.get("name") or ""), state if isinstance(state, dict) else {}
+    if isinstance(item, dict):
+        state = item.get("state")
+        return str(item.get("extension") or ""), state if isinstance(state, dict) else {}
+    return str(item), {}
+
+
+def _fee_bps(state: dict[str, Any]) -> int | None:
+    fees: list[int] = []
+    for key in ("newerTransferFee", "olderTransferFee"):
+        fee = state.get(key)
+        points = fee.get("transferFeeBasisPoints") if isinstance(fee, dict) else None
+        if isinstance(points, int):
+            fees.append(points)
+        elif isinstance(points, str) and points.isdigit():
+            fees.append(int(points))
+    points = state.get("transferFeeBasisPoints")
+    if isinstance(points, int):
+        fees.append(points)
+    elif isinstance(points, str) and points.isdigit():
+        fees.append(int(points))
+    return max(fees) if fees else None
+
+
+def extension_records(raw: Any) -> list[dict[str, Any]]:
+    """Parsed extension rows: name, hook program, fee in bps, and delegate."""
+    items = raw if isinstance(raw, list) else []
+    records: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict) and "name" in item and "extension" not in item:
+            fee_bps = item.get("fee_bps")
+            program = item.get("program")
+            delegate = item.get("delegate")
+            records.append(
+                {
+                    "name": str(item.get("name") or "").casefold().replace("_", ""),
+                    "program": program if isinstance(program, str) and program else None,
+                    "fee_bps": fee_bps if isinstance(fee_bps, int) else None,
+                    "delegate": delegate if isinstance(delegate, str) and delegate else None,
+                }
+            )
+            continue
+        name, state = _extension_state(item)
+        folded = name.casefold().replace("_", "")
+        program = None
+        for key in ("programId", "program"):
+            value = state.get(key)
+            if isinstance(value, str) and value:
+                program = value
+                break
+        fee_bps = _fee_bps(state)
+        delegate = state.get("delegate")
+        records.append(
+            {
+                "name": folded,
+                "program": program,
+                "fee_bps": fee_bps,
+                "delegate": delegate if isinstance(delegate, str) and delegate else None,
+            }
+        )
+    return records
+
+
+def sell_block_reason(records: list[dict[str, Any]], hard_fail_pct: float | None) -> str | None:
+    """Why a parsed extension makes a sell unsafe, or None when it does not."""
+    for record in records:
+        name = str(record.get("name") or "")
+        if name == "transferhook" and record.get("program"):
+            return "transfer hook program is set"
+        if name == "nontransferable":
+            return "non-transferable extension"
+        if name == "permanentdelegate" and record.get("delegate"):
+            return "permanent delegate can seize tokens"
+        if name == "transferfeeconfig" and hard_fail_pct is not None:
+            fee_bps = record.get("fee_bps")
+            if isinstance(fee_bps, int) and fee_bps / 100 > hard_fail_pct:
+                return f"transfer fee {fee_bps / 100:.2f}% exceeds {hard_fail_pct:.2f}%"
+    return None
+
+
+def check_token2022_extensions(
+    meta: dict[str, Any],
+    *,
+    exploratory: bool = False,
+    transfer_tax_hard_fail_pct: float | None = None,
+) -> CheckResult:
+    """Warn on ordinary extensions. Exploratory paper kills only a sell-unsafe one."""
+    raw = meta.get("extension_details")
+    if not isinstance(raw, list):
+        raw = meta.get("extensions") or []
+    records = extension_records(raw)
+    names = [str(record["name"]) for record in records if record.get("name")]
+    count = len(records)
+    listed = ", ".join(names)
+    block = sell_block_reason(records, transfer_tax_hard_fail_pct if exploratory else None)
+    if exploratory and block is not None:
+        return CheckResult(
+            id="token2022_extensions",
+            status="fail",
+            value=float(count),
+            threshold="sellable",
+            weight=Decimal("0.05"),
+            reason=block,
+        )
+    if count:
+        return CheckResult(
+            id="token2022_extensions",
+            status="warn",
+            value=float(count),
+            threshold="none",
+            weight=Decimal("0.05"),
+            reason=f"{count} token-2022 extensions present ({listed})",
+        )
     return CheckResult(
         id="token2022_extensions",
-        status="warn" if count else "pass",
-        value=float(count),
+        status="pass",
+        value=0.0,
         threshold="none",
         weight=Decimal("0.05"),
-        reason=(
-            f"{count} token-2022 extensions present ({listed}); review transfer hooks"
-            if count
-            else "no token-2022 extensions"
-        ),
+        reason="no token-2022 extensions",
     )
 
 

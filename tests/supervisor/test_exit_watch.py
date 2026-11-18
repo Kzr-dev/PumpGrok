@@ -97,6 +97,21 @@ async def test_poll_only_watcher_fills_the_crash_when_the_middle_ticks_are_unsee
     assert sold == [crash]
 
 
+async def test_a_second_tick_does_not_sell_again() -> None:
+    book = _Book(_position(1000), ExitsSettings())
+    calls: list[str] = []
+
+    async def sell(position: ExitPosition, price: int, reason: str) -> None:
+        del position, price
+        calls.append(reason)
+
+    clock = FixtureClock(start=20)
+    watch = TickExitWatch(book, sell, clock)
+    await watch.apply_tick(PriceTick(MINT, 700, clock.now(), "ws"))
+    await watch.apply_tick(PriceTick(MINT, 650, clock.now(), "poll"))
+    assert calls == ["stop_loss"]
+
+
 async def test_stale_tick_does_not_sell_and_a_poll_can() -> None:
     book = _Book(_position(1000), ExitsSettings())
     sold: list[str] = []
