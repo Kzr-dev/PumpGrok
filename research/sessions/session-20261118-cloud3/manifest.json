@@ -1,0 +1,14 @@
+{
+  "dataset": "session-20261118-cloud3",
+  "recorded_from_utc": "2026-11-18T15:18:16.087610Z",
+  "recorded_to_utc": "2026-11-18T16:01:21.045308Z",
+  "seed_hint": 20260101,
+  "sources": {
+    "rpc": "live-paper",
+    "pumpportal": "live-paper"
+  },
+  "sha256": {
+    "events.jsonl": "b0d22d0da25902dcdd6e5e7d9d32646ae53852e17385c5cfc017e178994efb16"
+  },
+  "notes": "Recorded by pumpgrok run --record. Curve ticks only; no keys."
+}
