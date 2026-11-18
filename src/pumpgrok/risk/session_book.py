@@ -350,9 +350,12 @@ def record_session_start(
             f"paper_equity_usd={usd}",
             f"sol_usd={sol_usd}",
             f"evidence={book.evidence}",
-            f"blind_acceptance={'YES' if accepted else 'NO'}",
+            f"blind_acceptance={'CONSUMED' if accepted else 'NO'}",
             f"blind_acceptance_by={by}",
             f"blind_acceptance_id={approval_id}",
+            "blind_acceptance_renew=state accept-blind before the next session"
+            if accepted
+            else "blind_acceptance_renew=not consumed",
         ]
     )
     rows: list[dict[str, Any]] = [

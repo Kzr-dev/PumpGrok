@@ -1,0 +1,14 @@
+{
+  "task": "pumpportal-breakout-paper",
+  "seat": "bot-02-risk",
+  "commands": [
+    {"cmd": "pytest -q --cov=pumpgrok --cov-fail-under=89.9", "exit": 0, "note": "89.92 percent"},
+    {"cmd": "mypy on discovery, rpc, live_paper, breakout", "exit": 0},
+    {"cmd": "pumpgrok run --mode paper --duration 600 with paper_equity_usd=100", "exit": 0, "note": "audits=69 clears=3 kills=66 buys=1 sells=0. One fill, two CLEARs refused data_stale. No below_liquidity_floor. Discovery warnings 0."}
+  ],
+  "not_verified": [
+    "subscribeTokenTrade, which the public docs say needs an API key",
+    "a historical PumpPortal archive; the study set is reconstructed curves",
+    "a closed-trade P&L; the one fill was still open at 10 minutes"
+  ]
+}

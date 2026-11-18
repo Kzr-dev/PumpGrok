@@ -166,7 +166,8 @@ def test_session_start_records_the_book_and_a_blind_acceptance(tmp_path: Path) -
     assert f"config_hash={digest}" in note["text"]
     assert "book_lamports=500000000" in note["text"]
     assert "autonomy=autonomous-paper" in note["text"]
-    assert "blind_acceptance=YES" in note["text"]
+    assert "blind_acceptance=CONSUMED" in note["text"]
+    assert "renew=state accept-blind" in note["text"]
     assert "blind_acceptance_by=human:op" in note["text"]
     changed = store.read(types=["ConfigChanged"], limit=None)[-1]["payload"]
     assert changed["new_hash"] == digest

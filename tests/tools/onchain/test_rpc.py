@@ -7,6 +7,7 @@ elapsed time.
 
 from __future__ import annotations
 
+import json
 import random
 import sys
 import types
@@ -179,3 +180,22 @@ def test_seeded_wait_uses_policy_bounds() -> None:
     assert 1.0 <= second <= 2.0
     late = wait(types.SimpleNamespace(attempt_number=10))
     assert 4.0 <= late <= 8.0
+
+
+async def test_403_on_one_method_rotates_and_stays_off_that_endpoint() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        calls.append((request.url.path, str(payload["method"])))
+        if request.url.path == "/a" and payload["method"] == "getTokenLargestAccounts":
+            return httpx.Response(403, json={"error": "no"})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "ok"})
+
+    rpc = _rpc(handler, endpoints=("https://rpc.invalid/a", "https://rpc.invalid/b"))
+    assert await rpc.call("getTokenLargestAccounts", ["mint"]) == "ok"
+    assert await rpc.call("getTokenLargestAccounts", ["mint"]) == "ok"
+    holders = [path for path, method in calls if method == "getTokenLargestAccounts"]
+    assert holders[0] == "/a"
+    assert "/b" in holders[1:]
+    assert await rpc.call("getAccountInfo", ["mint"]) == "ok"

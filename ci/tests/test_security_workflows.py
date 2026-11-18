@@ -54,6 +54,8 @@ LEGACY_TRACKED_RECEIPTS = frozenset(
 OWNER_ADMITTED_RECEIPTS = frozenset(
     {
         ".receipts/bot-02-risk/00058-github-hosted-runners.json",
+        ".receipts/bot-02-risk/session-book-risk-standard.json",
+        ".receipts/bot-02-risk/pumpportal-breakout-paper.json",
     }
 )
 

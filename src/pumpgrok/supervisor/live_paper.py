@@ -48,8 +48,18 @@ from pumpgrok.risk.session_book import (
     record_session_start,
     resolve_session_book,
 )
+from pumpgrok.strategy.breakout import confirms, default_band
 from pumpgrok.supervisor.exit_rules import LedgerExitBook
 from pumpgrok.supervisor.exit_watch import PriceTick, TickExitWatch
+from pumpgrok.tools.market.discovery import (
+    discovery_delay,
+    handshake_status,
+    logs_create_signature,
+    logs_subscribe_body,
+    mint_from_create_transaction,
+    portal_headers,
+    portal_subscribe_body,
+)
 from pumpgrok.tools.market.jupiter import QUOTE_URL, get_quote
 from pumpgrok.tools.market.launch_feed import (
     Launch,
@@ -63,7 +73,7 @@ from pumpgrok.tools.onchain.curve_layout import (
     CurveDecodeError,
     decode_curve_account_base64,
 )
-from pumpgrok.tools.onchain.rpc import RpcClient
+from pumpgrok.tools.onchain.rpc import RpcClient, RpcError
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +103,7 @@ class PaperSessionReport:
     autonomy: str = "manual-ticket"
     journaled: int = 0
     quotes_stale: int = 0
+    clears: int = 0
     attempted_lamports: list[int] = field(default_factory=list)
 
 
@@ -116,6 +127,9 @@ class LivePaperDeps:
     ticks: asyncio.Queue[PriceTick | None] = field(default_factory=asyncio.Queue)
     record: Callable[[dict[str, Any]], None] | None = None
     slippage_bps: int = 100
+    breakout_band: tuple[Decimal, Decimal] | None = None
+    launch_sol: dict[str, int] = field(default_factory=dict)
+    pending: dict[str, tuple[Launch, str, int]] = field(default_factory=dict)
 
 
 def trade_size_lamports(equity_lamports: int, budget: RiskBudget, limits: EngineLimits) -> int:
@@ -290,6 +304,7 @@ async def _place_buy(deps: LivePaperDeps, launch: Launch, ticket: str, size: int
         approval_id=f"apr-{deps.ids.ulid()}",
         correlation_id="live-paper",
     )
+    await deps.adapter._read_curve(launch.mint)
     try:
         fill = await deps.adapter.place(
             request,
@@ -339,6 +354,79 @@ async def _place_buy(deps: LivePaperDeps, launch: Launch, ticket: str, size: int
     return "filled"
 
 
+async def _quote_and_buy(
+    deps: LivePaperDeps,
+    launch: Launch,
+    ticket: str,
+    size: int,
+    *,
+    deadline: float,
+    attempted: set[str],
+    report: PaperSessionReport,
+) -> None:
+    """One quote and at most one buy. A stale quote is not retried."""
+    quote = await deps.quote(
+        (SOL_MINT, launch.mint, size, deps.slippage_bps, _SOL_DECIMALS, _TOKEN_DECIMALS)
+    )
+    note = ui_price_note(quote)
+    if not quote_is_actionable(quote):
+        report.quotes_stale += 1
+        attempted.add(launch.mint)
+        _journal(
+            deps.store,
+            deps.clock,
+            key=f"quote-stale|{launch.mint}|{ticket}",
+            text=note,
+            refs=[ticket, launch.mint],
+        )
+        report.journaled += 1
+        await _backoff(deps, quote, deadline)
+        return
+    attempted.add(launch.mint)
+    outcome = await _place_buy(deps, launch, ticket, size, note)
+    report.journaled += 1
+    if outcome == "filled":
+        report.buys += 1
+
+
+async def _resume_breakout(
+    deps: LivePaperDeps,
+    launch: Launch,
+    ticket: str,
+    size: int,
+    *,
+    deadline: float,
+    attempted: set[str],
+    report: PaperSessionReport,
+) -> None:
+    """Wait for the study band, then buy once. A late curve is not chased."""
+    band = deps.breakout_band
+    if band is None:
+        return
+    snap = await deps.adapter._read_curve(launch.mint)
+    if snap is None:
+        return
+    base = deps.launch_sol.setdefault(launch.mint, snap.s_lamports)
+    decision = confirms(base, snap.s_lamports, band)
+    if decision == "wait":
+        return
+    deps.pending.pop(launch.mint, None)
+    if decision == "late":
+        attempted.add(launch.mint)
+        _journal(
+            deps.store,
+            deps.clock,
+            key=f"breakout-late|{launch.mint}|{ticket}",
+            text="breakout window passed; no buy",
+            refs=[ticket, launch.mint],
+        )
+        report.journaled += 1
+        return
+    await _quote_and_buy(
+        deps, launch, ticket, size, deadline=deadline, attempted=attempted, report=report
+    )
+
+
 async def _handle_launch(
     deps: LivePaperDeps,
     launch: Launch,
@@ -386,6 +474,8 @@ async def _handle_launch(
                 "source": "pumpportal",
             }
         )
+    if verdict == "CLEAR":
+        report.clears += 1
     if verdict == "KILL" or audited.get("final") is True:
         killed.add(launch.mint)
         report.kills += 1
@@ -393,28 +483,21 @@ async def _handle_launch(
     open_count = len(await deps.adapter.positions())
     if not _entry_allowed(deps, launch, verdict, halted, open_count):
         return
-    quote = await deps.quote(
-        (SOL_MINT, launch.mint, size, deps.slippage_bps, _SOL_DECIMALS, _TOKEN_DECIMALS)
-    )
-    note = ui_price_note(quote)
-    if not quote_is_actionable(quote):
-        report.quotes_stale += 1
-        attempted.add(launch.mint)
-        _journal(
-            deps.store,
-            deps.clock,
-            key=f"quote-stale|{launch.mint}|{ticket}",
-            text=note,
-            refs=[ticket, launch.mint],
+    if deps.breakout_band is not None:
+        deps.pending[launch.mint] = (launch, ticket, size)
+        await _resume_breakout(
+            deps,
+            launch,
+            ticket,
+            size,
+            deadline=deadline,
+            attempted=attempted,
+            report=report,
         )
-        report.journaled += 1
-        await _backoff(deps, quote, deadline)
         return
-    attempted.add(launch.mint)
-    outcome = await _place_buy(deps, launch, ticket, size, note)
-    report.journaled += 1
-    if outcome == "filled":
-        report.buys += 1
+    await _quote_and_buy(
+        deps, launch, ticket, size, deadline=deadline, attempted=attempted, report=report
+    )
 
 
 async def _exit_open(
@@ -469,6 +552,20 @@ async def run_live_paper(deps: LivePaperDeps, *, duration_s: float) -> PaperSess
                 halted=reason,
                 deadline=deadline,
                 killed=killed,
+                attempted=attempted,
+                report=report,
+            )
+        for mint in list(deps.pending):
+            if mint in attempted or mint in killed:
+                deps.pending.pop(mint, None)
+                continue
+            pending_launch, pending_ticket, pending_size = deps.pending[mint]
+            await _resume_breakout(
+                deps,
+                pending_launch,
+                pending_ticket,
+                pending_size,
+                deadline=deadline,
                 attempted=attempted,
                 report=report,
             )
@@ -669,15 +766,30 @@ def _rpc_wss(https_url: str) -> str | None:
     return urlunsplit(("wss", netloc, parts.path, "", ""))
 
 
-async def _listen_creates(url: str, queue: asyncio.Queue[Launch], clock: Clock) -> None:
-    """Subscribe to new pump.fun mints. Failures wait on the clock and try again."""
+async def _listen_creates(
+    url: str,
+    queue: asyncio.Queue[Launch],
+    clock: Clock,
+    seen: set[str],
+    portal_seen: dict[str, float],
+) -> None:
+    """Subscribe to new pump.fun mints. A refused handshake backs off."""
     if not _public_url(url, ("wss", "https")):
         log.warning("discovery endpoint refused")
         return
+    rng = make_rng(1)
+    attempt = 0
     while True:
+        denied = False
         try:
-            async with open_public_socket(url, open_timeout=10) as ws:
-                await ws.send(json.dumps({"method": "subscribeNewToken"}))
+            async with open_public_socket(
+                url,
+                open_timeout=10,
+                user_agent_header="pumpgrok-paper/0.1",
+                additional_headers=portal_headers(),
+            ) as ws:
+                await ws.send(portal_subscribe_body())
+                attempt = 0
                 async for raw in ws:
                     if not isinstance(raw, str):
                         continue
@@ -687,13 +799,89 @@ async def _listen_creates(url: str, queue: asyncio.Queue[Launch], clock: Clock) 
                         continue
                     if isinstance(payload, dict):
                         launch = launch_from_message(payload)
-                        if launch is not None:
-                            queue.put_nowait(launch)
+                        if launch is None or launch.mint in seen:
+                            continue
+                        seen.add(launch.mint)
+                        portal_seen["at"] = clock.now()
+                        queue.put_nowait(launch)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("discovery unavailable error=%s", type(exc).__name__)
-            await clock.sleep(1.0)
+            status = handshake_status(exc)
+            denied = status in (401, 403)
+            log.warning(
+                "discovery unavailable error=%s status=%s",
+                type(exc).__name__,
+                status if status is not None else 0,
+            )
+        delay = discovery_delay(attempt, rng, denied=denied)
+        attempt += 1
+        await clock.sleep(delay)
+
+
+async def _listen_program_logs(
+    wss_url: str,
+    queue: asyncio.Queue[Launch],
+    rpc: RpcClient,
+    clock: Clock,
+    *,
+    portal_seen: dict[str, float],
+    seen: set[str],
+) -> None:
+    """Create events from pump.fun program logs when PumpPortal has gone quiet."""
+    if not _public_url(wss_url, ("wss",)):
+        return
+    rng = make_rng(2)
+    attempt = 0
+    while True:
+        denied = False
+        try:
+            async with open_public_socket(wss_url, open_timeout=10) as socket:
+                await socket.send(logs_subscribe_body(1))
+                attempt = 0
+                async for raw in socket:
+                    payload = _json_object(raw)
+                    if payload is None:
+                        continue
+                    signature = logs_create_signature(payload)
+                    if signature is None or clock.now() - portal_seen.get("at", 0.0) < 20.0:
+                        continue
+                    parsed = await _create_from_signature(rpc, signature)
+                    if parsed is None or parsed[0] in seen:
+                        continue
+                    seen.add(parsed[0])
+                    queue.put_nowait(
+                        Launch(
+                            mint=parsed[0],
+                            curve_account=parsed[1],
+                            creator=None,
+                            name=parsed[0][:8],
+                        )
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            status = handshake_status(exc)
+            denied = status in (401, 403)
+            log.warning("program log watch unavailable error=%s", type(exc).__name__)
+        delay = discovery_delay(attempt, rng, denied=denied)
+        attempt += 1
+        await clock.sleep(delay)
+
+
+async def _create_from_signature(rpc: RpcClient, signature: str) -> tuple[str, str] | None:
+    """One parsed transaction. A failure is no mint, not a raised error."""
+    try:
+        tx = await rpc.call(
+            "getTransaction",
+            [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
+        )
+    except (RpcError, httpx.HTTPError, ValueError) as exc:
+        log.warning("create transaction unreadable error=%s", type(exc).__name__)
+        return None
+    if not isinstance(tx, dict):
+        return None
+    return mint_from_create_transaction(tx)
 
 
 async def _listen_accounts(
@@ -914,24 +1102,37 @@ async def serve_public_paper(
             ticks=ticks,
             record=None if recorder is None else recorder.add,
             slippage_bps=max(1, int(settings.limits.max_slippage_bps)),
+            breakout_band=default_band() if settings.strategies.breakout_confirm else None,
         )
+        seen: set[str] = set()
+        portal_seen: dict[str, float] = {"at": 0.0}
         create_task = asyncio.create_task(
-            _listen_creates(settings.data.ws_url, launches, clock), name="pump-creates"
+            _listen_creates(settings.data.ws_url, launches, clock, seen, portal_seen),
+            name="pump-creates",
         )
         wss = _rpc_wss(settings.rpc.endpoints[0]) if settings.rpc.endpoints else None
         account_task: asyncio.Task[None] | None = None
+        log_task: asyncio.Task[None] | None = None
         if wss is not None:
             account_task = asyncio.create_task(
                 _listen_accounts(wss, curves, ticks, clock), name="curve-accounts"
+            )
+            log_task = asyncio.create_task(
+                _listen_program_logs(wss, launches, rpc, clock, portal_seen=portal_seen, seen=seen),
+                name="pump-logs",
             )
         try:
             report = await run_live_paper(deps, duration_s=duration_s)
         finally:
             create_task.cancel()
-            if account_task is not None:
-                account_task.cancel()
+            for task in (account_task, log_task):
+                if task is not None:
+                    task.cancel()
             await asyncio.gather(
-                create_task, *([account_task] if account_task else []), return_exceptions=True
+                create_task,
+                *([account_task] if account_task else []),
+                *([log_task] if log_task else []),
+                return_exceptions=True,
             )
         if recorder is not None:
             recorder.close()
