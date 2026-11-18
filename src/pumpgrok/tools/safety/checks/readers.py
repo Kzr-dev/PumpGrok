@@ -72,8 +72,12 @@ def check_top10_concentration(top: dict[str, Any], thresholds: SafetyThresholds)
 _SERIAL_SIGNATURES = 3
 
 
-def check_deployer_history(dep: dict[str, Any]) -> CheckResult:
-    """Fail known-bad creators and serial launchers; pass the rest."""
+def check_deployer_history(dep: dict[str, Any], *, advisory: bool = False) -> CheckResult:
+    """Fail known-bad creators and serial launchers; pass the rest.
+
+    ``advisory`` is the paper-only overlay. A serial launcher is still listed,
+    as a warn, and does not fail the check. Known-bad history stays a fail.
+    """
     if bool(dep.get("is_known_bad")) or int(dep.get("rugs", 0)) > 0:
         return CheckResult(
             id="deployer_history",
@@ -85,16 +89,19 @@ def check_deployer_history(dep: dict[str, Any]) -> CheckResult:
         )
     seen = int(dep.get("tokens_seen", 0))
     if seen >= _SERIAL_SIGNATURES:
+        reason = (
+            f"creator has launched {seen} tokens in the window; "
+            f"serial-launcher fail at {_SERIAL_SIGNATURES}"
+        )
+        if advisory:
+            reason = f"advisory: {reason}"
         return CheckResult(
             id="deployer_history",
-            status="fail",
+            status="warn" if advisory else "fail",
             value=seen,
             threshold=_SERIAL_SIGNATURES,
             weight=Decimal("0.10"),
-            reason=(
-                f"creator has launched {seen} tokens in the window; "
-                f"serial-launcher fail at {_SERIAL_SIGNATURES}"
-            ),
+            reason=reason,
         )
     return CheckResult(
         id="deployer_history",

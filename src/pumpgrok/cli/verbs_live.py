@@ -23,6 +23,7 @@ from pumpgrok.risk.fast_audit import (
     audit_mint,
     build_audit_rpc,
     dumps_audit,
+    paper_deployer_advisory,
     resolve_curve_account,
 )
 from pumpgrok.risk.session_book import BookUnresolved, locked_book, resolve_session_book
@@ -69,6 +70,7 @@ def risk_audit(args: object, settings: Settings) -> int:
                 creator=creator if isinstance(creator, str) and creator else None,
                 intended_size_lamports=trade_size_lamports(equity, settings.risk, settings.limits),
                 ticket_id="SOL-19700101-000",
+                deployer_advisory=paper_deployer_advisory(settings),
             )
         finally:
             await client.aclose()

@@ -36,6 +36,21 @@ def test_serial_deployer_is_kill() -> None:
     assert recommend_verdict([row], SafetyThresholds()) == "KILL"
 
 
+def test_paper_advisory_serial_is_listed_and_does_not_kill() -> None:
+    row = check_deployer_history(
+        {"is_known_bad": False, "rugs": 0, "tokens_seen": 100}, advisory=True
+    )
+    assert row.status == "warn"
+    assert str(row.reason).startswith("advisory:")
+    assert recommend_verdict([row], SafetyThresholds()) == "CLEAR"
+
+
+def test_advisory_keeps_known_bad_as_kill() -> None:
+    row = check_deployer_history({"is_known_bad": True, "rugs": 0, "tokens_seen": 0}, advisory=True)
+    assert row.status == "fail"
+    assert recommend_verdict([row], SafetyThresholds()) == "KILL"
+
+
 def test_two_signatures_are_not_a_serial_fail() -> None:
     row = check_deployer_history({"is_known_bad": False, "rugs": 0, "tokens_seen": 2})
     assert row.status == "pass"

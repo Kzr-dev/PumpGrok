@@ -7,6 +7,8 @@ tests/config/test_settings_surface_characterization.py.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -83,3 +85,6 @@ class SafetySettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     thresholds: SafetyThresholds = Field(default_factory=SafetyThresholds)
+    # Paper-only. ``required`` keeps the serial-launcher KILL. ``advisory``
+    # still records the check and does not KILL. Live mode refuses this value.
+    deployer_history_mode: Literal["required", "advisory"] = "required"
