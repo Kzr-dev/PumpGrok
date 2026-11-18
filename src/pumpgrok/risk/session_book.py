@@ -238,6 +238,7 @@ def config_hash(
     autonomy: str,
     *,
     deployer_history_mode: str = "required",
+    paper_profile: str = "standard",
 ) -> str:
     """sha256 of the book, the autonomy level, and the risk and safety settings."""
     payload = {
@@ -252,6 +253,7 @@ def config_hash(
         "limits": _stable(limits.model_dump(mode="python")),
         "safety": _stable(thresholds.model_dump(mode="python")),
         "deployer_history_mode": deployer_history_mode,
+        "paper_profile": paper_profile,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -334,6 +336,7 @@ def record_session_start(
     thresholds: SafetyThresholds,
     autonomy: str,
     deployer_history_mode: str = "required",
+    paper_profile: str = "standard",
 ) -> str:
     """Append the session book, autonomy, config hash and blind-acceptance decision."""
     ts_utc = format_ts_utc(clock.now())
@@ -344,6 +347,7 @@ def record_session_start(
         book,
         autonomy,
         deployer_history_mode=deployer_history_mode,
+        paper_profile=paper_profile,
     )
     acceptance = open_blind_acceptance(store)
     accepted = acceptance is not None
@@ -361,6 +365,8 @@ def record_session_start(
             f"paper_equity_usd={usd}",
             f"sol_usd={sol_usd}",
             f"deployer_history_mode={deployer_history_mode}",
+            f"paper_profile={paper_profile}",
+            f"liquidity_floor_multiple={budget.liquidity_floor_multiple}",
             f"evidence={book.evidence}",
             f"blind_acceptance={'CONSUMED' if accepted else 'NO'}",
             f"blind_acceptance_by={by}",
@@ -380,7 +386,12 @@ def record_session_start(
             "payload": {
                 "source": "paper",
                 "by": "desk",
-                "keys_changed": ["session_book", "config_hash", "deployer_history_mode"],
+                "keys_changed": [
+                    "session_book",
+                    "config_hash",
+                    "deployer_history_mode",
+                    "paper_profile",
+                ],
                 "old_hash": "",
                 "new_hash": digest,
             },

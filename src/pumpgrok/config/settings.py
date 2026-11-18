@@ -447,10 +447,18 @@ def load_settings(**kwargs: Any) -> Settings:
         settings = Settings(**kwargs)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(exc)) from exc
-    if settings.safety.deployer_history_mode == "advisory" and settings.effective_mode != "paper":
-        raise ConfigError(
-            ["safety.deployer_history_mode advisory is refused unless execution mode is paper"]
-        )
+    if settings.effective_mode != "paper":
+        refused: list[str] = []
+        if settings.safety.deployer_history_mode == "advisory":
+            refused.append(
+                "safety.deployer_history_mode advisory is refused unless execution mode is paper"
+            )
+        if settings.safety.paper_profile == "exploratory":
+            refused.append(
+                "safety.paper_profile exploratory is refused unless execution mode is paper"
+            )
+        if refused:
+            raise ConfigError(refused)
     return settings
 
 

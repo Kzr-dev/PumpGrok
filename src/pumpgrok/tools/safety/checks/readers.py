@@ -115,8 +115,9 @@ def check_deployer_history(dep: dict[str, Any], *, advisory: bool = False) -> Ch
 
 def check_token2022_extensions(meta: dict[str, Any]) -> CheckResult:
     """Warn when transfer-hook-style extensions are present."""
-    extensions = meta.get("extensions") or []
+    extensions = [str(item) for item in (meta.get("extensions") or [])]
     count = len(extensions)
+    listed = ", ".join(extensions)
     return CheckResult(
         id="token2022_extensions",
         status="warn" if count else "pass",
@@ -124,7 +125,7 @@ def check_token2022_extensions(meta: dict[str, Any]) -> CheckResult:
         threshold="none",
         weight=Decimal("0.05"),
         reason=(
-            f"{count} token-2022 extensions present; review transfer hooks"
+            f"{count} token-2022 extensions present ({listed}); review transfer hooks"
             if count
             else "no token-2022 extensions"
         ),

@@ -83,3 +83,39 @@ def bonding_curve_pda(mint: str, program_id: str = _PUMP_PROGRAM) -> str:
         raise ValueError("mint and program must be 32-byte public keys")
     address, _bump = find_program_address([_SEED, mint_bytes], program_bytes)
     return _b58_encode(address)
+
+
+_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"  # noqa: S105
+_TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"  # noqa: S105
+_ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+
+
+def associated_token_address(owner: str, mint: str, token_program: str) -> str:
+    """Associated token account of ``owner`` for ``mint``. Read-only; no keys."""
+    owner_bytes = _b58_decode(owner)
+    mint_bytes = _b58_decode(mint)
+    program_bytes = _b58_decode(token_program)
+    ata_bytes = _b58_decode(_ATA_PROGRAM)
+    if any(len(part) != 32 for part in (owner_bytes, mint_bytes, program_bytes, ata_bytes)):
+        raise ValueError("owner, mint and programs must be 32-byte public keys")
+    address, _bump = find_program_address(
+        [owner_bytes, program_bytes, mint_bytes],
+        ata_bytes,
+    )
+    return _b58_encode(address)
+
+
+def curve_token_accounts(curve: str, mint: str) -> list[str]:
+    """Token accounts that hold the curve's inventory. Empty when a key is unusable.
+
+    ``getTokenLargestAccounts`` returns token accounts, not the curve PDA.
+    The unsold supply sits in the curve's associated account, so a top-10
+    share that does not exclude it counts the curve as a holder.
+    """
+    found: list[str] = []
+    for program in (_TOKEN_PROGRAM, _TOKEN_2022_PROGRAM):
+        try:
+            found.append(associated_token_address(curve, mint, program))
+        except ValueError:
+            return []
+    return found

@@ -88,3 +88,6 @@ class SafetySettings(BaseModel):
     # Paper-only. ``required`` keeps the serial-launcher KILL. ``advisory``
     # still records the check and does not KILL. Live mode refuses this value.
     deployer_history_mode: Literal["required", "advisory"] = "required"
+    # Paper-only. ``standard`` keeps the required-check KILLs. ``exploratory``
+    # keeps a short hard list and records the rest. Live mode refuses it.
+    paper_profile: Literal["standard", "exploratory"] = "standard"

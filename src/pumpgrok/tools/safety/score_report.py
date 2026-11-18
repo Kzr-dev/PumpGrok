@@ -38,6 +38,7 @@ from pumpgrok.tools.market.liquidity import LiquidityIn, run_liquidity
 from pumpgrok.tools.onchain.authorities_tool import AuthoritiesIn, run_authorities
 from pumpgrok.tools.onchain.deployer_history import DeployerHistoryIn, run_deployer_history
 from pumpgrok.tools.onchain.lp_status import LpStatusIn, run_lp_status
+from pumpgrok.tools.onchain.pump_pda import curve_token_accounts
 from pumpgrok.tools.onchain.rpc import RpcClient
 from pumpgrok.tools.onchain.token_metadata import TokenMetadataIn, run_token_metadata
 from pumpgrok.tools.onchain.top_holders import TopHoldersIn, run_top_holders
@@ -215,7 +216,13 @@ async def _optional(
     return await _fetch(call)
 
 
-async def _read_all(inp: ScoreReportIn, rpc: RpcClient, runnable: list[CheckId]) -> _Readings:
+async def _read_all(
+    inp: ScoreReportIn,
+    rpc: RpcClient,
+    runnable: list[CheckId],
+    *,
+    exploratory: bool = False,
+) -> _Readings:
     """Run the readers the runnable checks need, concurrently, in a fixed result order."""
     needed: set[str] = set(runnable)
     auth_call = (
@@ -233,8 +240,11 @@ async def _read_all(inp: ScoreReportIn, rpc: RpcClient, runnable: list[CheckId])
         if "token2022_extensions" in needed
         else None
     )
+    excluded: list[str] = []
+    if exploratory and inp.curve_account:
+        excluded = curve_token_accounts(inp.curve_account, inp.mint)
     top_call = (
-        run_top_holders(TopHoldersIn(mint=inp.mint), rpc)
+        run_top_holders(TopHoldersIn(mint=inp.mint, exclude=excluded), rpc)
         if "top10_concentration" in needed
         else None
     )
@@ -451,13 +461,118 @@ def _verdict(
     return "CLEAR"
 
 
+_EXPLORATORY_HARD: frozenset[str] = frozenset(
+    {
+        "mint_authority",
+        "freeze_authority",
+        "lp_status",
+        "liquidity_depth",
+        "token2022_extensions",
+        "honeypot",
+    }
+)
+
+
+def _advisory_copy(row: CheckResult) -> CheckResult:
+    reason = row.reason if row.reason.startswith("advisory:") else f"advisory: {row.reason}"
+    status: Literal["pass", "warn", "fail", "blind"] = (
+        "warn" if row.status == "fail" else row.status
+    )
+    return row.model_copy(update={"status": status, "reason": reason})
+
+
+def _sell_blocked(reason: str) -> bool:
+    folded = reason.casefold().replace("_", "").replace("-", "").replace(" ", "")
+    return "transferhook" in folded or "nontransferable" in folded
+
+
+def _apply_exploratory(rows: list[CheckResult], liq: dict[str, Any] | None) -> list[CheckResult]:
+    """Keep the short paper hard list. Everything else stays in the notes."""
+    graduated = bool(liq and liq.get("graduated") is True)
+    rewritten: list[CheckResult] = []
+    for row in rows:
+        if row.id == "lp_status" and (row.value == "graduated" or graduated):
+            rewritten.append(
+                row.model_copy(
+                    update={
+                        "status": "fail",
+                        "reason": "graduated curve is complete; the paper adapter cannot price it",
+                    }
+                )
+            )
+            continue
+        if row.id == "token2022_extensions" and _sell_blocked(row.reason):
+            rewritten.append(
+                row.model_copy(
+                    update={
+                        "status": "fail",
+                        "reason": (
+                            f"{row.reason}; a transfer hook or non-transferable "
+                            "extension blocks a sell"
+                        ),
+                    }
+                )
+            )
+            continue
+        if row.id == "liquidity_depth" and row.status == "fail":
+            if str(row.reason).startswith("no measurable") or row.value in (0, 0.0):
+                rewritten.append(row)
+            else:
+                rewritten.append(_advisory_copy(row))
+            continue
+        if row.id in ("top10_concentration", "deployer_history") and row.status == "fail":
+            rewritten.append(_advisory_copy(row))
+            continue
+        rewritten.append(row)
+    return rewritten
+
+
+def exploratory_features(inp: ScoreReportIn, readings: _Readings) -> dict[str, str | None]:
+    """Rank inputs already on the audit. Buy velocity has no keyless source."""
+    top = readings.top or {}
+    dep = readings.dep or {}
+    liq = readings.liq or {}
+    parts: list[Decimal] = []
+    top10 = top.get("top10_share")
+    seen = dep.get("tokens_seen")
+    progress = liq.get("curve_progress")
+    liquidity = int(liq.get("liquidity_lamports") or 0) if liq else 0
+    size = int(inp.intended_size_lamports)
+    multiple: Decimal | None = None
+    if size > 0 and liquidity > 0:
+        multiple = Decimal(liquidity) / Decimal(size)
+    if top10 is not None:
+        share = min(Decimal(1), max(Decimal(0), Decimal(str(top10))))
+        parts.append(Decimal(1) - share)
+    if seen is not None and not bool(dep.get("is_known_bad")):
+        parts.append(Decimal(1) - min(Decimal(int(seen)), Decimal(20)) / Decimal(20))
+    if multiple is not None:
+        parts.append(min(multiple, Decimal(30)) / Decimal(30))
+    if progress is not None:
+        bounded = min(Decimal(1), max(Decimal(0), Decimal(str(progress))))
+        parts.append(Decimal(4) * bounded * (Decimal(1) - bounded))
+    score = sum(parts, Decimal(0)) / Decimal(len(parts)) if parts else Decimal(0)
+    return {
+        "score": format(score, "f"),
+        "top10_share": None if top10 is None else str(top10),
+        "deployer_signatures": None if seen is None else str(int(seen)),
+        "depth_multiple": None if multiple is None else format(multiple, "f"),
+        "curve_progress": None if progress is None else str(progress),
+        "buy_velocity": None,
+    }
+
+
 def recommend_verdict(
     rows: list[CheckResult],
     thresholds: SafetyThresholds,
     *,
     hard_veto: bool = False,
+    exploratory: bool = False,
 ) -> Literal["CLEAR", "CONDITIONAL", "KILL"]:
     """CLEAR, CONDITIONAL, or KILL. A required fail is KILL even when the score is high."""
+    if exploratory:
+        hard = any(row.status == "fail" and row.id in _EXPLORATORY_HARD for row in rows)
+        return "KILL" if hard else "CLEAR"
     score = _score(rows)
     advisory_active = not paid_rpc_provider_recorded()
     blind_required = [
@@ -481,6 +596,7 @@ async def run_score_report(
     *,
     thresholds: SafetyThresholds | None = None,
     deployer_advisory: bool = False,
+    exploratory: bool = False,
 ) -> dict[str, Any]:
     """Compose the readers and return a validated ``ScoreReportOut`` payload."""
     active = resolve_thresholds(inp.thresholds, thresholds)
@@ -491,7 +607,7 @@ async def run_score_report(
     runnable = [c for c in CHECK_IDS if c in wanted and c not in ADVISORY_IDS]
 
     evidence: list[Evidence] = []
-    readings = await _read_all(inp, rpc, runnable)
+    readings = await _read_all(inp, rpc, runnable, exploratory=exploratory)
     rows = _reader_rows(
         inp,
         runnable,
@@ -499,9 +615,11 @@ async def run_score_report(
         active,
         evidence,
         clock=rpc.clock,
-        deployer_advisory=deployer_advisory,
+        deployer_advisory=deployer_advisory or exploratory,
     )
     rows.extend(_advisory_rows(wanted, evidence, rpc.clock))
+    if exploratory:
+        rows = _apply_exploratory(rows, readings.liq)
 
     score = _score(rows)
     top = readings.top
@@ -513,7 +631,7 @@ async def run_score_report(
         for r in rows
         if r.status == "blind" and advisory_active and r.id in HOLDER_ADVISORY_PAIR
     ]
-    verdict = recommend_verdict(rows, active, hard_veto=hard_veto)
+    verdict = recommend_verdict(rows, active, hard_veto=hard_veto, exploratory=exploratory)
 
     out = {
         "score": int(score),
@@ -530,7 +648,10 @@ async def run_score_report(
             rpc.clock,
         ),
     }
-    return ScoreReportOut.model_validate(out).model_dump()
+    body = ScoreReportOut.model_validate(out).model_dump()
+    if exploratory:
+        body["exploratory_rank"] = exploratory_features(inp, readings)
+    return body
 
 
 def build_score_report_tool(rpc: RpcClient, thresholds: SafetyThresholds | None = None) -> Tool:

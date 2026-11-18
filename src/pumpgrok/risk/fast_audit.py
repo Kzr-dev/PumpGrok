@@ -99,6 +99,17 @@ def audit_text(report: dict[str, Any], *, mint: str, ticket_id: str) -> str:
         lines.append("Conditions: required checks must be fresh before an entry")
     if verdict == "KILL":
         lines.append("Final: KILL cannot be overridden")
+    rank = report.get("exploratory_rank")
+    if isinstance(rank, dict):
+        lines.append(
+            "Rank: "
+            f"score={rank.get('score')} "
+            f"top10_share={rank.get('top10_share')} "
+            f"deployer_signatures={rank.get('deployer_signatures')} "
+            f"depth_multiple={rank.get('depth_multiple')} "
+            f"curve_progress={rank.get('curve_progress')} "
+            f"buy_velocity={rank.get('buy_velocity')}"
+        )
     lines.append(f"Self-Audit: All 10 checks completed: {self_audit_flag(checks)}")
     lines.append("Blind checks: " + (", ".join(blinds) if blinds else "none"))
     return "\n".join(lines)
@@ -120,6 +131,7 @@ def finalize_report(report: dict[str, Any], *, mint: str, ticket_id: str) -> dic
         "advisory_blind_checks": list(report.get("advisory_blind_checks") or []),
         "checks": checks,
         "score": report.get("score"),
+        "exploratory_rank": report.get("exploratory_rank"),
         "text": audit_text(report, mint=mint, ticket_id=ticket_id),
     }
     ready = _json_ready(body)
@@ -137,6 +149,7 @@ async def audit_mint(
     intended_size_lamports: int,
     ticket_id: str = "SOL-19700101-000",
     deployer_advisory: bool = False,
+    exploratory: bool = False,
 ) -> dict[str, Any]:
     """Run the ten checks once. The returned KILL is final for the caller to record."""
     report = await run_score_report(
@@ -148,7 +161,8 @@ async def audit_mint(
         ),
         rpc,
         thresholds=None,
-        deployer_advisory=deployer_advisory,
+        deployer_advisory=deployer_advisory or exploratory,
+        exploratory=exploratory,
     )
     return finalize_report(report, mint=mint, ticket_id=ticket_id)
 
@@ -158,6 +172,11 @@ def paper_deployer_advisory(settings: Settings) -> bool:
     return (
         settings.effective_mode == "paper" and settings.safety.deployer_history_mode == "advisory"
     )
+
+
+def paper_exploratory(settings: Settings) -> bool:
+    """Honor the exploratory profile only while the effective mode is paper."""
+    return settings.effective_mode == "paper" and settings.safety.paper_profile == "exploratory"
 
 
 def build_audit_rpc(

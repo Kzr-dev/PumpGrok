@@ -18,7 +18,7 @@ from pumpgrok.config.settings import (
     find_unknown_env,
     load_settings,
 )
-from pumpgrok.risk.fast_audit import paper_deployer_advisory
+from pumpgrok.risk.fast_audit import paper_deployer_advisory, paper_exploratory
 
 
 @pytest.fixture
@@ -159,6 +159,33 @@ def test_advisory_deployer_history_loads_in_paper_and_refuses_live(
     monkeypatch.setenv("PUMPGROK_CONFIG", live)
     with pytest.raises(ConfigError, match="execution mode is paper"):
         load_settings()
+
+
+def test_exploratory_profile_loads_in_paper_and_refuses_live(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paper = _write_toml(
+        tmp_path / "paper.toml",
+        '[safety]\npaper_profile = "exploratory"\n',
+    )
+    monkeypatch.setenv("PUMPGROK_CONFIG", paper)
+    loaded = load_settings()
+    assert loaded.effective_mode == "paper"
+    assert paper_exploratory(loaded) is True
+
+    live = _write_toml(
+        tmp_path / "live.toml",
+        '[execution]\nmode = "live"\n[safety]\npaper_profile = "exploratory"\n',
+    )
+    monkeypatch.setenv("PUMPGROK_CONFIG", live)
+    with pytest.raises(ConfigError, match="paper_profile exploratory"):
+        load_settings()
+
+
+def test_constructed_live_settings_ignore_the_exploratory_profile(clean_env: None) -> None:
+    settings = Settings(mode="live", safety=SafetySettings(paper_profile="exploratory"))
+    assert settings.safety.paper_profile == "exploratory"
+    assert paper_exploratory(settings) is False
 
 
 def test_constructed_live_settings_ignore_the_advisory_key(clean_env: None) -> None:
