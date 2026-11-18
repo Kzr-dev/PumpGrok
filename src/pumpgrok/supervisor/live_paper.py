@@ -144,6 +144,14 @@ class LivePaperDeps:
 EXPLORATORY_LIQUIDITY_FLOOR = 1
 
 
+def session_book_lamports(deps: LivePaperDeps) -> int:
+    """Locked session book. A marked-up equity must not enlarge the next order."""
+    raw = deps.store.get_meta("initial_equity_lamports")
+    if isinstance(raw, str) and raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return int(deps.budget.paper_equity_lamports)
+
+
 def trade_size_lamports(equity_lamports: int, budget: RiskBudget, limits: EngineLimits) -> int:
     """Buy size from the risk budget fraction of equity, not below the engine minimum.
 
@@ -472,7 +480,7 @@ async def _handle_launch(
     """Audit one launch. Exploratory paper returns a ranked candidate instead of buying."""
     if launch.mint in killed or launch.mint in attempted:
         return None
-    size = trade_size_lamports(deps.adapter.equity_lamports(), deps.budget, deps.limits)
+    size = trade_size_lamports(session_book_lamports(deps), deps.budget, deps.limits)
     report.attempted_lamports.append(size)
     ticket = allocate_ticket(
         deps.store,
