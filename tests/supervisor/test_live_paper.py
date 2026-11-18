@@ -21,6 +21,7 @@ from pumpgrok.supervisor.live_paper import (
     LivePaperDeps,
     SessionRecorder,
     run_live_paper,
+    session_book_lamports,
     trade_size_lamports,
 )
 from pumpgrok.tools.market.launch_feed import Launch
@@ -166,6 +167,14 @@ def _quote() -> dict[str, Any]:
         "output_decimals": 6,
         "code": None,
     }
+
+
+def test_size_uses_the_locked_book_when_marked_equity_is_larger(tmp_path: Path) -> None:
+    deps = _deps(tmp_path, autonomy="autonomous-paper", launches=[], quote=_quote())
+    deps.store.set_meta("initial_equity_lamports", "1000")
+    assert session_book_lamports(deps) == 1000
+    deps.store._db.execute("DELETE FROM meta WHERE key = 'initial_equity_lamports'")
+    assert session_book_lamports(deps) == int(deps.budget.paper_equity_lamports)
 
 
 async def test_autonomous_paper_buys_once_through_the_adapter(tmp_path: Path) -> None:
