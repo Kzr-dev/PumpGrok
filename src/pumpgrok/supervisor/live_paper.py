@@ -43,6 +43,7 @@ from pumpgrok.risk.fast_audit import (
     audit_mint,
     dumps_audit,
     paper_deployer_advisory,
+    paper_exploratory,
     rpc_min_interval_s,
 )
 from pumpgrok.risk.limits import EngineLimits
@@ -133,8 +134,14 @@ class LivePaperDeps:
     record: Callable[[dict[str, Any]], None] | None = None
     slippage_bps: int = 100
     breakout_band: tuple[Decimal, Decimal] | None = None
+    exploratory: bool = False
     launch_sol: dict[str, int] = field(default_factory=dict)
     pending: dict[str, tuple[Launch, str, int]] = field(default_factory=dict)
+
+
+# A constant-product buy needs virtual SOL at least as large as the order.
+# Live and the standard profile keep the budget's 10x floor.
+EXPLORATORY_LIQUIDITY_FLOOR = 1
 
 
 def trade_size_lamports(equity_lamports: int, budget: RiskBudget, limits: EngineLimits) -> int:
@@ -432,6 +439,21 @@ async def _resume_breakout(
     )
 
 
+def _rank_value(audited: dict[str, Any]) -> Decimal:
+    raw = audited.get("exploratory_rank")
+    if not isinstance(raw, dict):
+        return Decimal(0)
+    try:
+        return Decimal(str(raw.get("score") or "0"))
+    except (ArithmeticError, ValueError):
+        return Decimal(0)
+
+
+async def _mark_open(deps: LivePaperDeps) -> None:
+    """Write curve marks so a held mint is fresh for risk and for the exit rules."""
+    await deps.adapter.mark_open_positions(source="paper", correlation_id="live-paper")
+
+
 async def _handle_launch(
     deps: LivePaperDeps,
     launch: Launch,
@@ -441,10 +463,10 @@ async def _handle_launch(
     killed: set[str],
     attempted: set[str],
     report: PaperSessionReport,
-) -> None:
-    """Audit one launch and, when the gates allow, place a single buy."""
+) -> tuple[Launch, str, int, Decimal] | None:
+    """Audit one launch. Exploratory paper returns a ranked candidate instead of buying."""
     if launch.mint in killed or launch.mint in attempted:
-        return
+        return None
     size = trade_size_lamports(deps.adapter.equity_lamports(), deps.budget, deps.limits)
     report.attempted_lamports.append(size)
     ticket = allocate_ticket(
@@ -484,10 +506,10 @@ async def _handle_launch(
     if verdict == "KILL" or audited.get("final") is True:
         killed.add(launch.mint)
         report.kills += 1
-        return
+        return None
     open_count = len(await deps.adapter.positions())
     if not _entry_allowed(deps, launch, verdict, halted, open_count):
-        return
+        return None
     if deps.breakout_band is not None:
         deps.pending[launch.mint] = (launch, ticket, size)
         await _resume_breakout(
@@ -499,15 +521,21 @@ async def _handle_launch(
             attempted=attempted,
             report=report,
         )
-        return
+        return None
+    if deps.exploratory:
+        return (launch, ticket, size, _rank_value(audited))
     await _quote_and_buy(
         deps, launch, ticket, size, deadline=deadline, attempted=attempted, report=report
     )
+    await _mark_open(deps)
+    return None
 
 
 async def _exit_open(
     deps: LivePaperDeps, book: LedgerExitBook, watch: TickExitWatch, report: PaperSessionReport
 ) -> None:
+    book.sync(deps.store)
+    await _mark_open(deps)
     book.sync(deps.store)
     sold = await watch.drain(deps.ticks)
     sold.extend(await watch.poll_stale(deps.price_for))
@@ -550,8 +578,9 @@ async def run_live_paper(deps: LivePaperDeps, *, duration_s: float) -> PaperSess
     while deps.clock.now() < deadline:
         reason = halt_reason(deps.risk)
         report.halted = reason
+        ranked: list[tuple[Launch, str, int, Decimal]] = []
         for launch in await deps.discover():
-            await _handle_launch(
+            chosen = await _handle_launch(
                 deps,
                 launch,
                 halted=reason,
@@ -560,6 +589,27 @@ async def run_live_paper(deps: LivePaperDeps, *, duration_s: float) -> PaperSess
                 attempted=attempted,
                 report=report,
             )
+            if chosen is not None:
+                ranked.append(chosen)
+        ranked.sort(key=lambda item: item[3], reverse=True)
+        for launch, ticket, size, _rank in ranked:
+            open_count = len(await deps.adapter.positions())
+            trades_today = int(deps.adapter._fold_state().counters.trades_today)
+            if trades_today >= int(deps.budget.max_trades_per_day):
+                break
+            if not _entry_allowed(deps, launch, "CLEAR", reason, open_count):
+                continue
+            await _mark_open(deps)
+            await _quote_and_buy(
+                deps,
+                launch,
+                ticket,
+                size,
+                deadline=deadline,
+                attempted=attempted,
+                report=report,
+            )
+            await _mark_open(deps)
         for mint in list(deps.pending):
             if mint in attempted or mint in killed:
                 deps.pending.pop(mint, None)
@@ -663,7 +713,7 @@ def default_quote(client: Any, *, quote_url: str = QUOTE_URL) -> QuoteCall:
 
 
 def audit_with(
-    rpc: RpcClient, *, deployer_advisory: bool = False
+    rpc: RpcClient, *, deployer_advisory: bool = False, exploratory: bool = False
 ) -> Callable[[Launch, str, int], Awaitable[dict[str, Any]]]:
     async def audit(launch: Launch, ticket: str, size: int) -> dict[str, Any]:
         try:
@@ -675,6 +725,7 @@ def audit_with(
                 intended_size_lamports=size,
                 ticket_id=ticket,
                 deployer_advisory=deployer_advisory,
+                exploratory=exploratory,
             )
             dumps_audit(report)
         except (TypeError, ValueError):
@@ -1007,6 +1058,8 @@ async def _session_budget(
         budget = apply_book(store, settings.risk, opened)
     else:
         budget = budget_for_book(settings.risk, opened)
+    if paper_exploratory(settings):
+        budget = budget.model_copy(update={"liquidity_floor_multiple": EXPLORATORY_LIQUIDITY_FLOOR})
     autonomy = read_autonomy(store)
     record_session_start(
         store,
@@ -1017,6 +1070,7 @@ async def _session_budget(
         thresholds=settings.safety.thresholds,
         autonomy=autonomy,
         deployer_history_mode=settings.safety.deployer_history_mode,
+        paper_profile=settings.safety.paper_profile,
     )
     return budget, autonomy
 
@@ -1105,13 +1159,18 @@ async def serve_public_paper(
             ids=ids,
             autonomy=autonomy,
             discover=discover,
-            audit=audit_with(rpc, deployer_advisory=paper_deployer_advisory(settings)),
+            audit=audit_with(
+                rpc,
+                deployer_advisory=paper_deployer_advisory(settings) or paper_exploratory(settings),
+                exploratory=paper_exploratory(settings),
+            ),
             quote=default_quote(client, quote_url=settings.jupiter.quote_url),
             price_for=price_for,
             ticks=ticks,
             record=None if recorder is None else recorder.add,
             slippage_bps=max(1, int(settings.limits.max_slippage_bps)),
             breakout_band=default_band() if settings.strategies.breakout_confirm else None,
+            exploratory=paper_exploratory(settings),
         )
         seen: set[str] = set()
         portal_seen: dict[str, float] = {"at": 0.0}

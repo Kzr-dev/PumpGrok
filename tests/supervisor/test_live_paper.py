@@ -188,6 +188,48 @@ async def test_autonomous_paper_buys_once_through_the_adapter(tmp_path: Path) ->
     assert reports and reports[0]["payload"]["seat"] == "bot-02-risk"
 
 
+async def test_exploratory_buys_the_higher_rank_and_marks_before_the_next(tmp_path: Path) -> None:
+    low = _launch()
+    high = Launch(
+        mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        curve_account=CURVE,
+        creator="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        name="High",
+    )
+    deps = _deps(tmp_path, autonomy="autonomous-paper", launches=[low, high], quote=_quote())
+    deps.exploratory = True
+
+    async def discover() -> list[Launch]:
+        if getattr(discover, "sent", False):
+            return []
+        discover.sent = True  # type: ignore[attr-defined]
+        return [low, high]
+
+    async def audit(launch: Launch, ticket: str, size: int) -> dict[str, Any]:
+        del size
+        score = "0.9" if launch.name == "High" else "0.1"
+        return {
+            "verdict": "CLEAR",
+            "final": False,
+            "text": f"Verdict: CLEAR\n{ticket}",
+            "checks": [],
+            "exploratory_rank": {"score": score},
+        }
+
+    deps.discover = discover
+    deps.audit = audit
+    report = await _drive(deps, 30)
+    placed = [
+        row["payload"]["mint"]
+        for row in deps.store.read(limit=None)
+        if row["type"] == "OrderPlaced" and row["payload"]["side"] == "buy"
+    ]
+    assert report.buys == 2
+    assert placed[0] == high.mint
+    marks = [row for row in deps.store.read(limit=None) if row["type"] == "MarkToMarket"]
+    assert marks
+
+
 async def test_manual_ticket_does_not_buy(tmp_path: Path) -> None:
     deps = _deps(tmp_path, autonomy="manual-ticket", launches=[_launch()], quote=_quote())
     recorded: list[dict[str, Any]] = []
