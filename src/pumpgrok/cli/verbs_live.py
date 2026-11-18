@@ -156,7 +156,7 @@ def paper_duration(args: object, settings: Settings) -> int:
         sys.stdout,
         (
             f"paper session autonomy={report.autonomy} audits={report.audits} "
-            f"kills={report.kills} buys={report.buys} sells={report.sells} "
+            f"clears={report.clears} kills={report.kills} buys={report.buys} sells={report.sells} "
             f"halt={report.halted or 'none'} quotes_stale={report.quotes_stale} "
             "attempted_lamports="
             + (",".join(str(size) for size in report.attempted_lamports) or "none")

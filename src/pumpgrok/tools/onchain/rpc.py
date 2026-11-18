@@ -43,6 +43,24 @@ class _Failover(Exception):
     """Internal: an RPC-level error on this endpoint; try the next one."""
 
 
+class _StatusRefuse(Exception):
+    """HTTP 403, 413 or 429. Rotate away from this endpoint for this method."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+
+class _SkipEndpoint(_Failover):
+    """Leave this endpoint now. Another endpoint should serve the method."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+
+class _RetrySame(Exception):
+    """A lone endpoint returned 429. Retry it under the caller's policy."""
+
+
 class _BadBody(Exception):
     """Internal: an endpoint returned malformed JSON; try the next one."""
 
@@ -53,6 +71,8 @@ def _retriable_rpc_error(exc: BaseException) -> bool:
     4xx (including unknown-method -32601 surfaced as HTTP) and connection
     errors fail over to the next endpoint immediately, without retry delay.
     """
+    if isinstance(exc, _RetrySame):
+        return True
     if isinstance(exc, httpx.TimeoutException):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
@@ -120,6 +140,8 @@ class RpcClient:
         self._retry = retry
         self._cache_ttl_s = cache_ttl_s
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._cooldown: dict[tuple[str, str], float] = {}
+        self._cursor = 0
         self._min_interval_s = min_interval_s
         self._last_http_at: float | None = None
         self._pace_lock = asyncio.Lock()
@@ -146,6 +168,8 @@ class RpcClient:
             headers=self._headers(),
             timeout=self._timeout_seconds,
         )
+        if resp.status_code in (403, 413, 429):
+            raise _StatusRefuse(resp.status_code)
         resp.raise_for_status()
         try:
             data = resp.json()
@@ -199,28 +223,64 @@ class RpcClient:
             self._last_http_at = self._clock.monotonic()
             return await self._call_uncached(method, params)
 
+    def _ordered(self, method: str) -> list[str]:
+        """Endpoints that are not cooling for ``method`` first, then the rest."""
+        now = self._clock.monotonic()
+        ready: list[str] = []
+        cooling: list[str] = []
+        for endpoint in self._endpoints:
+            until = self._cooldown.get((endpoint, method), 0.0)
+            if until > now:
+                cooling.append(endpoint)
+            else:
+                ready.append(endpoint)
+        if not ready:
+            return list(self._endpoints)
+        shift = self._cursor % len(ready)
+        self._cursor += 1
+        return ready[shift:] + ready[:shift] + cooling
+
+    def _cool(self, endpoint: str, method: str, status: int) -> None:
+        """Skip this endpoint for this method until the clock passes the window."""
+        hold = 30.0 if status == 429 else 120.0
+        self._cooldown[(endpoint, method)] = self._clock.monotonic() + hold
+
+    async def _one_endpoint(
+        self, endpoint: str, method: str, params: list[Any], *, alternate: bool
+    ) -> Any:
+        async for attempt in AsyncRetrying(
+            sleep=self._clock.sleep,
+            wait=_SeededWait(self._rng, base=self._retry.base_s, cap=self._retry.max_s),
+            stop=stop_after_attempt(self._retry.attempts),
+            retry=retry_if_exception(_retriable_rpc_error),
+            reraise=True,
+        ):
+            with attempt:
+                try:
+                    return await self._post_once(endpoint, method, params)
+                except RpcError as exc:
+                    raise _Failover from exc
+                except _StatusRefuse as exc:
+                    if alternate or exc.status != 429:
+                        raise _SkipEndpoint(exc.status) from exc
+                    raise _RetrySame from exc
+        raise RpcError(f"rpc failed method={method}")
+
     async def _call_uncached(self, method: str, params: list[Any]) -> Any:
         bad_bodies = 0
-        for endpoint in self._endpoints:
+        ordered = self._ordered(method)
+        for index, endpoint in enumerate(ordered):
             try:
-                async for attempt in AsyncRetrying(
-                    sleep=self._clock.sleep,
-                    wait=_SeededWait(self._rng, base=self._retry.base_s, cap=self._retry.max_s),
-                    stop=stop_after_attempt(self._retry.attempts),
-                    retry=retry_if_exception(_retriable_rpc_error),
-                    reraise=True,
-                ):
-                    with attempt:
-                        try:
-                            return await self._post_once(endpoint, method, params)
-                        except RpcError as exc:
-                            raise _Failover from exc
+                return await self._one_endpoint(
+                    endpoint, method, params, alternate=index < len(ordered) - 1
+                )
+            except _SkipEndpoint as exc:
+                self._cool(endpoint, method, exc.status)
             except _Failover:
                 continue
             except _BadBody:
                 bad_bodies += 1
-                continue
-            except (httpx.HTTPError, RetryError):
+            except (_RetrySame, httpx.HTTPError, RetryError):
                 continue
         if bad_bodies == len(self._endpoints):
             raise DataStale(f"rpc bad body method={method} endpoints={len(self._endpoints)}")

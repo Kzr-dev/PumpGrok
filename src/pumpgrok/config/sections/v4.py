@@ -48,6 +48,8 @@ class StrategiesSettings(BaseModel):
 
     enabled: bool = False
     allowlist: tuple[str, ...] = ()
+    # Opt-in curve band from the breakout study. CLEAR is still required.
+    breakout_confirm: bool = False
 
 
 class BacktestV2Settings(BaseModel):
